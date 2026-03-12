@@ -144,7 +144,11 @@ def translate_pdf(
                 font_size = 10.0
 
             translated = _translate_block(text, translator)
-            rect = fitz.Rect(x0, y0, x1, y1)
+            # Extra width for translation + infinite height downward
+            safe_x1 = min(x1 + 80, page.rect.width - 10)
+            # Make the height effectively extend to the bottom margin of the page
+            safe_y1 = max(y1 + 100, page.rect.height - 10)
+            rect = fitz.Rect(max(0, x0), max(0, y0), safe_x1, safe_y1)
 
             try:
                 new_page.insert_textbox(
