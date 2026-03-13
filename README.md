@@ -56,7 +56,7 @@ Then open [http://localhost:8000](http://localhost:8000) in your browser.
 
 ## Project Structure
 
-```
+```text
 PDFTranslate/
 ├── app/
 │   ├── main.py            # FastAPI routes
@@ -69,6 +69,8 @@ PDFTranslate/
 │   └── js/app.js          # Upload / polling / download logic
 ├── uploads/               # Temporary input PDFs
 ├── outputs/               # Translated PDF outputs
+├── agents.md              # Documentación y roles de IA
+├── skills.md              # Documentación de Super-Skills de IA
 ├── .env.example
 ├── requirements.txt
 └── README.md
