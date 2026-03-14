@@ -5,9 +5,9 @@
 ## Features
 
 - 📄 Translate PDFs from English → Spanish (configurable)
-- 🖼️ Preserves images and diagrams in their original positions
+- 🖼️ Preserves images and diagrams using semantic extraction
 - 💻 Code-aware: source code blocks are never translated
-- 📐 Block-by-block text placement maintains original layout
+- 📐 HTML Reconstruction: prevents text overlapping by regenerating a clean document flow
 - 🌐 Modern dark-mode web UI with drag-and-drop upload
 - ⚡ Async processing with real-time progress polling
 
@@ -17,6 +17,8 @@
 |-------|-----------|
 | Backend | Python · FastAPI · Uvicorn |
 | PDF Engine | PyMuPDF (fitz) |
+| HTML Processor | BeautifulSoup4 |
+| PDF Generator | xhtml2pdf (ReportLab) |
 | Translation | deep-translator (Google Translate) |
 | Frontend | Vanilla HTML · CSS · JavaScript |
 
@@ -89,15 +91,16 @@ Any language code supported by Google Translate works (e.g. `fr`, `de`, `pt`).
 
 ## How It Works
 
-1. User uploads a PDF via the web UI
-2. FastAPI saves the file and starts a background translation task
-3. PyMuPDF opens the PDF and iterates over each page:
-   - Images are extracted and re-inserted at their original coordinates
-   - Text blocks are classified (code / title / paragraph)
-   - Non-code text is translated with Google Translate
-   - Translated text is placed back at the same position
-4. The translated PDF is saved and made available for download
-5. The frontend polls `/status/{job_id}` every 2 seconds until done
+1. User uploads a PDF via the web UI.
+2. FastAPI starts a background translation task.
+3. The engine extracts semantic blocks from the PDF using PyMuPDF:
+   - Images are captured as PNGs.
+   - Text is classified as (code / title / paragraph).
+   - A structured HTML intermediate document is created.
+4. BeautifulSoup parses the HTML, and only the text content is sent for translation.
+5. Code blocks are kept in `<pre>` tags to preserve formatting and skip translation.
+6. `xhtml2pdf` renders the translated HTML into a brand new, clean PDF document.
+7. The result is a readable, professionally formatted document without the layout bugs of the original PDF.
 
 ## License
 
