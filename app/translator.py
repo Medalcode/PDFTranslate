@@ -63,12 +63,34 @@ _BULLET_GLYPH = re.compile(r"[\u25a0\u25cf\u2022\u2023]")  # ■ ● • ‣
 
 def _clean_block(text: str) -> str:
     """Remove PDF artefacts: soft hyphens, bad hyphenated line-breaks, bullet glyphs."""
-    text = _SOFT_HYPHEN.sub("", text)          # remove invisible soft hyphen
-    text = _HYPHEN_BREAK.sub("", text)         # join 'ex-\nample' → 'example'
-    text = _BULLET_GLYPH.sub("• ", text)       # normalise bullet glyphs
-    # Remove lone ■ (replacement char) that appear mid-word from bad encoding
-    text = re.sub(r"(?<=[a-zA-Z])\\u25a0(?=[a-zA-Z])", "", text)
+    text = _SOFT_HYPHEN.sub("", text)
+    text = _HYPHEN_BREAK.sub("", text)
+    text = _BULLET_GLYPH.sub("\u2022 ", text)
     return text
+
+
+_TOC_ENTRY = re.compile(
+    r"(\.{3,}|\s\d{1,4}\s*$)",
+    re.MULTILINE,
+)
+
+
+def _split_block_lines(text: str) -> list[str]:
+    """
+    For TOC blocks, return each line separately so they render as individual
+    entries. A block is TOC-like when ≥2 of its lines have dot-leaders or
+    trailing page numbers.
+    For normal prose, returns a single joined string.
+    """
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if len(lines) <= 1:
+        return [text.strip()]
+
+    toc_count = sum(1 for l in lines if _TOC_ENTRY.search(l))
+    if toc_count >= 2:
+        return lines  # keep structure
+
+    return [" ".join(lines)]  # join prose paragraph
 
 
 def _protect(text: str) -> tuple[str, dict[str, str]]:
@@ -281,10 +303,16 @@ def translate_pdf(
                     continue
 
                 btype = classify(text)
-                # For body text: join broken PDF lines into a single paragraph now
                 if btype == "body":
-                    text = " ".join(text.splitlines()).strip()
-                content_blocks.append((btype, text))
+                    # Smart split: TOC blocks get one entry per line;
+                    # normal prose blocks get lines joined into a paragraph.
+                    for sub in _split_block_lines(text):
+                        if sub:
+                            content_blocks.append(("body", sub))
+                elif btype == "code":
+                    content_blocks.append(("code", text))
+                else:
+                    content_blocks.append((btype, text))
 
             if progress_callback:
                 progress_callback(page_idx + 1, total_pages)
