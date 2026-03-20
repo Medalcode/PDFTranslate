@@ -1,13 +1,13 @@
 """
 Core PDF translation engine.
 
-Pipeline: PDF → Texto estructurado → HTML → Traducción → Nuevo PDF limpio (via ReportLab)
+Pipeline: PDF → Bloques estructurados → Traducción por lotes → Nuevo PDF limpio (ReportLab)
 """
 import logging
+import re
 import time
 import tempfile
 from pathlib import Path
-from io import BytesIO
 
 import fitz  # PyMuPDF
 from deep_translator import GoogleTranslator
@@ -15,76 +15,151 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Preformatted, Image, PageBreak
-from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Preformatted, Image
+from reportlab.lib.enums import TA_JUSTIFY
 
 from app.config import SOURCE_LANG, TARGET_LANG
 from app.text_classifier import classify
 
 logger = logging.getLogger(__name__)
 
-MAX_CHUNK = 4900  # Google Translate safe limit
+MAX_CHUNK = 4500          # conservative Google Translate limit per call
+BATCH_SEP = " 🔹 "        # unique separator for batch calls (emoji not translated)
+BATCH_MAX = 3000          # max total chars per batch API call
+API_DELAY = 1.2           # seconds between API calls
+
+# ---------------------------------------------------------------------------
+# Technical terms that must NEVER be translated
+# ---------------------------------------------------------------------------
+PROTECTED = {
+    # Apache ecosystem
+    "Hadoop", "HDFS", "YARN", "MapReduce", "Spark", "Hive", "Pig",
+    "Flume", "Sqoop", "HBase", "ZooKeeper", "Avro", "Parquet", "Crunch",
+    "Oozie", "Tez", "Kafka", "Storm", "Flink", "Cassandra", "MongoDB",
+    # Cloud / infra
+    "AWS", "S3", "EC2", "GCS", "Azure", "Docker", "Kubernetes",
+    # Languages / tools
+    "Java", "Python", "Scala", "Ruby", "Maven", "Gradle", "Git",
+    # Formats / protocols
+    "JSON", "XML", "CSV", "HTTP", "REST", "JDBC", "ODBC", "SQL",
+    # O'Reilly / branding
+    "O'Reilly", "Cloudera", "Apache",
+}
+
+_PH_START = "PROT"          # placeholder prefix
+_ph_map: dict[str, str] = {}
+
+
+def _protect(text: str) -> tuple[str, dict[str, str]]:
+    """Replace protected terms with unique placeholders."""
+    ph_map: dict[str, str] = {}
+    idx = 0
+    for term in PROTECTED:
+        # match whole-word (case-sensitive)
+        pattern = r"\b" + re.escape(term) + r"\b"
+        placeholder = f"{_PH_START}{idx:03d}X"
+        if re.search(pattern, text):
+            text = re.sub(pattern, placeholder, text)
+            ph_map[placeholder] = term
+            idx += 1
+    return text, ph_map
+
+
+def _restore(text: str, ph_map: dict[str, str]) -> str:
+    """Restore protected terms from placeholders."""
+    for ph, original in ph_map.items():
+        text = text.replace(ph, original)
+    return text
 
 
 # ---------------------------------------------------------------------------
-# Text chunking & translation helpers
+# Translation helpers
 # ---------------------------------------------------------------------------
 
-def _split_text(text: str) -> list[str]:
-    """Split long text into safe chunks for the translator."""
-    words = text.split()
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-    for word in words:
-        wl = len(word) + 1
-        if current_len + wl > MAX_CHUNK and current:
-            chunks.append(" ".join(current))
-            current = []
-            current_len = 0
-        current.append(word)
-        current_len += wl
-    if current:
-        chunks.append(" ".join(current))
-    return chunks or [text]
+def _call_api(text: str, translator: GoogleTranslator, max_retries: int = 4) -> str:
+    """Single call to the translation API with exponential-backoff retry."""
+    for attempt in range(max_retries):
+        try:
+            time.sleep(API_DELAY)
+            result = translator.translate(text)
+            if result:
+                return result
+            logger.warning("API returned None on attempt %d, retrying…", attempt + 1)
+        except Exception as exc:
+            wait = 2 ** attempt
+            logger.warning("API error attempt %d/%d (%s). Waiting %ds…",
+                           attempt + 1, max_retries, exc, wait)
+            time.sleep(wait)
+    logger.error("All retries exhausted. Returning original text.")
+    return text
 
 
-def _translate_text(text: str, translator: GoogleTranslator, max_retries: int = 3) -> str:
-    """Translate a single block of text with retry logic."""
-    stripped = text.strip()
-    if not stripped:
-        return text
+def _translate_chunk(text: str, translator: GoogleTranslator) -> str:
+    """Protect terms, translate, restore."""
+    protected_text, ph_map = _protect(text)
+    translated = _call_api(protected_text, translator)
+    return _restore(translated, ph_map)
 
-    def _call(chunk: str, attempt: int = 0) -> str:
-        while attempt < max_retries:
-            try:
-                time.sleep(0.4)
-                result = translator.translate(chunk)
-                return result if result else chunk
-            except Exception as exc:
-                attempt += 1
-                logger.warning("Translation attempt %d/%d failed: %s", attempt, max_retries, exc)
-                time.sleep(1.5 * attempt)
-        logger.error("All retries exhausted for chunk starting with: %s…", chunk[:40])
-        return chunk  # Fallback: return original
 
-    if len(stripped) <= MAX_CHUNK:
-        return _call(stripped)
+def _translate_batch(texts: list[str], translator: GoogleTranslator) -> list[str]:
+    """
+    Translate a list of strings in as few API calls as possible by batching.
+    Uses a unique separator that Google won't translate.
+    """
+    if not texts:
+        return texts
 
-    return " ".join(_call(c) for c in _split_text(stripped))
+    results: list[str] = []
+    batch: list[str] = []
+    batch_len = 0
+
+    def flush(batch: list[str]) -> list[str]:
+        if not batch:
+            return []
+        joined = BATCH_SEP.join(batch)
+        protected_joined, ph_map = _protect(joined)
+        translated_joined = _call_api(protected_joined, translator)
+        translated_joined = _restore(translated_joined, ph_map)
+        parts = translated_joined.split(BATCH_SEP.strip())
+        # If split count doesn't match, fallback to per-item
+        if len(parts) == len(batch):
+            return [p.strip() for p in parts]
+        # Fallback: translate individually
+        logger.warning("Batch split mismatch (%d vs %d), translating individually.",
+                       len(parts), len(batch))
+        return [_translate_chunk(t, translator) for t in batch]
+
+    for text in texts:
+        text_len = len(text)
+        if text_len > MAX_CHUNK:
+            # Flush current batch first
+            results.extend(flush(batch))
+            batch = []
+            batch_len = 0
+            # Translate oversized text in one call
+            results.append(_translate_chunk(text, translator))
+            continue
+
+        if batch and batch_len + len(BATCH_SEP) + text_len > BATCH_MAX:
+            results.extend(flush(batch))
+            batch = []
+            batch_len = 0
+
+        batch.append(text)
+        batch_len += text_len + len(BATCH_SEP)
+
+    results.extend(flush(batch))
+    return results
 
 
 # ---------------------------------------------------------------------------
 # ReportLab styles
 # ---------------------------------------------------------------------------
 
-def _build_styles():
+def _build_styles() -> dict[str, ParagraphStyle]:
     styles = getSampleStyleSheet()
-
     body = ParagraphStyle(
-        "BodyText",
+        "PDFBody",
         parent=styles["Normal"],
         fontName="Helvetica",
         fontSize=10,
@@ -93,23 +168,23 @@ def _build_styles():
         alignment=TA_JUSTIFY,
     )
     title = ParagraphStyle(
-        "ChapterTitle",
+        "PDFTitle",
         parent=styles["Heading2"],
         fontName="Helvetica-Bold",
         fontSize=13,
-        leading=16,
+        leading=17,
         spaceBefore=14,
         spaceAfter=6,
         textColor=colors.HexColor("#1a1a2e"),
     )
     code = ParagraphStyle(
-        "CodeBlock",
+        "PDFCode",
         parent=styles["Code"],
         fontName="Courier",
         fontSize=8,
         leading=11,
-        leftIndent=10,
-        rightIndent=10,
+        leftIndent=12,
+        rightIndent=12,
         spaceBefore=6,
         spaceAfter=6,
         backColor=colors.HexColor("#f5f5f5"),
@@ -117,16 +192,7 @@ def _build_styles():
         borderWidth=0.5,
         borderPadding=6,
     )
-    caption = ParagraphStyle(
-        "Caption",
-        parent=styles["Normal"],
-        fontName="Helvetica-Oblique",
-        fontSize=8,
-        leading=10,
-        spaceAfter=4,
-        textColor=colors.grey,
-    )
-    return {"body": body, "title": title, "code": code, "caption": caption}
+    return {"body": body, "title": title, "code": code}
 
 
 # ---------------------------------------------------------------------------
@@ -144,95 +210,121 @@ def translate_pdf(
     Translate a PDF using a clean PDF → ReportLab rebuild pipeline.
 
     Steps:
-      1. Extract text blocks and images from each page with PyMuPDF.
+      1. Extract text blocks and images per page with PyMuPDF.
       2. Classify each block (code / title / body text).
-      3. Translate non-code text with Google Translate.
-      4. Rebuild a brand-new PDF with ReportLab (proper text flow, no overlaps).
+      3. Batch-translate all non-code blocks together (fewer API calls → fewer rate-limit errors).
+      4. Rebuild a brand-new PDF with ReportLab (proper text flow, no overlaps, no blank pages).
     """
-    logger.info("Starting translation: %s → %s", input_path, output_path)
+    logger.info("Starting translation pipeline: %s", input_path)
     translator = GoogleTranslator(source=source_lang, target=target_lang)
     styles = _build_styles()
 
     doc_in = fitz.open(input_path)
     total_pages = len(doc_in)
 
-    story: list = []  # ReportLab flowable list
+    # ── Pass 1: extract all content blocks ──────────────────────────────────
+    # Each entry: ("code"|"title"|"body"|"image", data)
+    content_blocks: list[tuple[str, object]] = []
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
 
         for page_idx, page in enumerate(doc_in):
-            logger.info("Processing page %d / %d", page_idx + 1, total_pages)
-
-            # --- sort blocks top-to-bottom, left-to-right ---
+            logger.info("Extracting page %d / %d", page_idx + 1, total_pages)
             blocks = page.get_text("blocks")
             blocks.sort(key=lambda b: (round(b[1] / 10) * 10, b[0]))
 
             for block in blocks:
                 x0, y0, x1, y1, content, block_no, block_type = block
 
-                # ── Image block ─────────────────────────────────────────────
-                if block_type == 1:
+                if block_type == 1:  # image
                     try:
                         rect = fitz.Rect(x0, y0, x1, y1)
+                        # Skip very small image clips (likely noise / decorations)
+                        if rect.width < 20 or rect.height < 20:
+                            continue
                         pix = page.get_pixmap(clip=rect, dpi=150)
                         img_file = tmp_path / f"img_{page_idx}_{block_no}.png"
                         pix.save(str(img_file))
-
-                        # Scale image to fit within page margins
-                        available_width = A4[0] - 4 * cm  # 2cm margin each side
-                        img_w = pix.width
-                        img_h = pix.height
-                        if img_w > 0:
-                            scale = min(available_width / img_w, 1.0)
-                            draw_w = img_w * scale * (72 / 150)  # pts at 150 dpi
-                            draw_h = img_h * scale * (72 / 150)
-                            story.append(Image(str(img_file), width=draw_w, height=draw_h))
-                            story.append(Spacer(1, 4))
+                        available_w = A4[0] - 4 * cm
+                        scale = min(available_w / max(pix.width, 1), 1.0)
+                        draw_w = pix.width * scale * (72 / 150)
+                        draw_h = pix.height * scale * (72 / 150)
+                        content_blocks.append(("image", (str(img_file), draw_w, draw_h)))
                     except Exception as exc:
-                        logger.warning("Could not extract image p%d b%d: %s", page_idx, block_no, exc)
+                        logger.warning("Image extract failed p%d b%d: %s", page_idx, block_no, exc)
                     continue
 
-                # ── Text block ───────────────────────────────────────────────
                 text = content.strip()
                 if not text:
                     continue
 
                 btype = classify(text)
-
-                if btype == "code":
-                    # Never translate; preserve whitespace
-                    safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    story.append(Preformatted(safe, styles["code"]))
-
-                elif btype == "title":
-                    translated = _translate_text(text, translator)
-                    safe = translated.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    story.append(Paragraph(safe, styles["title"]))
-
-                else:
-                    # Join broken PDF lines into a real paragraph
-                    joined = " ".join(text.splitlines()).strip()
-                    translated = _translate_text(joined, translator)
-                    safe = translated.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    story.append(Paragraph(safe, styles["body"]))
-
-            story.append(Spacer(1, 6))  # small gap between PDF pages
+                content_blocks.append((btype, text))
 
             if progress_callback:
                 progress_callback(page_idx + 1, total_pages)
 
         doc_in.close()
 
-    # --- Build the new PDF with ReportLab ---
-    logger.info("Rendering new PDF with ReportLab...")
-    doc_out = SimpleDocTemplate(
-        output_path,
-        pagesize=A4,
-        leftMargin=2 * cm,
-        rightMargin=2 * cm,
-        topMargin=2 * cm,
-        bottomMargin=2 * cm,
-    )
-    doc_out.build(story)
+        # ── Pass 2: batch-translate all translatable blocks ──────────────────
+        logger.info("Translating %d blocks in batches…", len(content_blocks))
+
+        # Collect indices and texts of blocks that need translation
+        to_translate_idx: list[int] = []
+        to_translate_txt: list[str] = []
+
+        for i, (btype, data) in enumerate(content_blocks):
+            if btype in ("title", "body") and isinstance(data, str):
+                to_translate_idx.append(i)
+                to_translate_txt.append(data)
+
+        logger.info("Sending %d text blocks to translator…", len(to_translate_txt))
+        translated_texts = _translate_batch(to_translate_txt, translator)
+
+        # Write back translations into content_blocks
+        for idx, translated in zip(to_translate_idx, translated_texts):
+            btype, _ = content_blocks[idx]
+            content_blocks[idx] = (btype, translated)
+
+        # ── Pass 3: build PDF with ReportLab ─────────────────────────────────
+        logger.info("Rendering output PDF…")
+        story: list = []
+
+        for btype, data in content_blocks:
+            if btype == "image":
+                img_file, w, h = data
+                story.append(Image(img_file, width=w, height=h))
+                story.append(Spacer(1, 4))
+
+            elif btype == "code":
+                safe = (data
+                        .replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;"))
+                story.append(Preformatted(safe, styles["code"]))
+
+            elif btype == "title":
+                safe = (data
+                        .replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;"))
+                story.append(Paragraph(safe, styles["title"]))
+
+            else:  # body
+                joined = " ".join(data.splitlines()).strip() if isinstance(data, str) else str(data)
+                safe = (joined
+                        .replace("&", "&amp;")
+                        .replace("<", "&lt;")
+                        .replace(">", "&gt;"))
+                story.append(Paragraph(safe, styles["body"]))
+
+        doc_out = SimpleDocTemplate(
+            output_path,
+            pagesize=A4,
+            leftMargin=2 * cm, rightMargin=2 * cm,
+            topMargin=2 * cm,  bottomMargin=2 * cm,
+        )
+        doc_out.build(story)
+
     logger.info("Done → %s", output_path)
