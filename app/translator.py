@@ -15,7 +15,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Preformatted, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Preformatted, Image, PageBreak
 from reportlab.lib.enums import TA_JUSTIFY
 
 from app.config import SOURCE_LANG, TARGET_LANG
@@ -345,16 +345,27 @@ def translate_pdf(
                 if not text:
                     continue
 
+                is_footer = (y0 > 750 or (y0 > 600 and max_size < 10.0))
+                is_header = y0 < 60 and max_size < 10.0
+
+                if is_footer or is_header:
+                    logger.debug("Skipping header/footer text on page %d: %s", page_idx, text)
+                    continue  # Filter out entirely to prevent random text from showing up
+
                 is_mono = "mono" in font_name or "courier" in font_name or "consolas" in font_name
-                is_footer = y0 > 600 and max_size < 10.0
+                is_bold = "bold" in font_name or "semibold" in font_name or "black" in font_name
+                is_italic = "italic" in font_name or "oblique" in font_name
 
                 btype = "code" if is_mono else classify(text)
-                if is_footer and btype != "code":
-                    btype = "footer"
 
-                meta = {"size": round(max_size, 1), "footer": is_footer}
+                meta = {
+                    "size": round(max_size, 1), 
+                    "page": page_idx,
+                    "bold": is_bold,
+                    "italic": is_italic
+                }
 
-                if btype == "body" and not is_footer:
+                if btype == "body":
                     # Smart split: TOC blocks get one entry per line;
                     # normal prose blocks get lines joined into a paragraph.
                     for sub in _split_block_lines(text):
@@ -393,8 +404,14 @@ def translate_pdf(
         # ── Pass 3: build PDF with ReportLab ─────────────────────────────────
         logger.info("Rendering output PDF…")
         story: list = []
+        current_page = 0
 
         for btype, data, meta in content_blocks:
+            page_idx = meta.get("page", current_page)
+            if page_idx > current_page:
+                story.append(PageBreak())
+                current_page = page_idx
+
             if btype == "image":
                 img_file, w, h = data
                 story.append(Image(img_file, width=w, height=h))
@@ -404,14 +421,12 @@ def translate_pdf(
                 safe = str(data).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 story.append(Preformatted(safe, styles["code"]))
 
-            else:  # title, body, footer
+            else:  # title, body
                 safe = str(data).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 
                 font_size = meta.get("size", 10.5)
 
-                if btype == "footer" or meta.get("footer"):
-                    base_style = styles["footer"]
-                elif btype == "title" or font_size >= 12.0:
+                if btype == "title" or font_size >= 12.0:
                     if font_size > 20.0:
                         base_style = styles["title_xl"]
                     elif font_size >= 14.0:
@@ -420,6 +435,11 @@ def translate_pdf(
                         base_style = styles["title_sm"]
                 else:
                     base_style = styles["body"]
+
+                if meta.get("bold"):
+                    safe = f"<b>{safe}</b>"
+                if meta.get("italic"):
+                    safe = f"<i>{safe}</i>"
 
                 story.append(Paragraph(safe, base_style))
 
