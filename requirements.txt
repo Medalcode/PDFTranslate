@@ -5,5 +5,5 @@ deep-translator==1.11.4
 python-multipart==0.0.12
 python-dotenv==1.0.1
 aiofiles==23.2.1
+reportlab==4.4.10
 beautifulsoup4==4.12.3
-xhtml2pdf==0.2.17

@@ -16,9 +16,8 @@
 | Layer | Technology |
 |-------|-----------|
 | Backend | Python · FastAPI · Uvicorn |
-| PDF Engine | PyMuPDF (fitz) |
-| HTML Processor | BeautifulSoup4 |
-| PDF Generator | xhtml2pdf (ReportLab) |
+| PDF Read | PyMuPDF (fitz) |
+| PDF Write | ReportLab |
 | Translation | deep-translator (Google Translate) |
 | Frontend | Vanilla HTML · CSS · JavaScript |
 
@@ -93,14 +92,13 @@ Any language code supported by Google Translate works (e.g. `fr`, `de`, `pt`).
 
 1. User uploads a PDF via the web UI.
 2. FastAPI starts a background translation task.
-3. The engine extracts semantic blocks from the PDF using PyMuPDF:
-   - Images are captured as PNGs.
-   - Text is classified as (code / title / paragraph).
-   - A structured HTML intermediate document is created.
-4. BeautifulSoup parses the HTML, and only the text content is sent for translation.
-5. Code blocks are kept in `<pre>` tags to preserve formatting and skip translation.
-6. `xhtml2pdf` renders the translated HTML into a brand new, clean PDF document.
-7. The result is a readable, professionally formatted document without the layout bugs of the original PDF.
+3. **PyMuPDF** reads each page, extracting text blocks and images.
+   - Blocks are sorted top-to-bottom, left-to-right to preserve reading order.
+   - Text is classified: `code` (never translated), `title`, or `body`.
+   - Images are captured as high-resolution PNGs.
+4. **Google Translate** (via `deep-translator`) translates each body/title block with retry logic.
+5. **ReportLab** assembles a brand-new PDF from flowable elements — no coordinates, no overlap.
+6. The output PDF is saved and made available for download.
 
 ## License
 
