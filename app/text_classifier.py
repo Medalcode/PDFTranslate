@@ -1,94 +1,95 @@
 """
 Text block classifier.
-Detects whether a PDF text block is: code, a title, or regular paragraph text.
+Returns: 'code', 'title', or 'body'.
 """
+import re
 
-CODE_PATTERNS = [
-    "def ",
-    "import ",
-    "from ",
-    "class ",
-    "return ",
-    "print(",
-    "if ",
-    "else:",
-    "elif ",
-    "for ",
-    "while ",
-    "try:",
-    "except",
-    "with ",
-    "lambda",
-    "pip install",
-    "pip ",
-    "sudo ",
-    "apt ",
-    "npm ",
-    "yarn ",
-    "git ",
-    "docker",
-    "SELECT ",
-    "FROM ",
-    "WHERE ",
-    "INSERT ",
-    "UPDATE ",
-    "DELETE ",
-    "CREATE ",
-    "#!/",
-    "http://",
-    "https://",
-    "$ ",
-    ">>> ",
-    "...",
+# Strict code-only patterns — must appear at line start
+_CODE_START = re.compile(
+    r"""^\s*(
+        def\s+\w+\s*\(        # Python function
+      | class\s+\w+            # class definition
+      | import\s+\w+           # import statement
+      | from\s+\w+\s+import    # from import
+      | public\s+(class|static|void|int|String)  # Java
+      | \$\s+\w+               # shell command
+      | >>>\s+                 # Python REPL
+      | \#include\s*<          # C/C++ include
+      | SELECT\s+|UPDATE\s+|DELETE\s+|INSERT\s+  # SQL
+      | pip\s+install          # pip
+    )""",
+    re.VERBOSE | re.IGNORECASE | re.MULTILINE,
+)
+
+_CODE_SYMBOLS = [
+    "{", "}", "=>", "->", "==", "!=", ">=", "<=",
+    "++", "--", "&&", "||", "::", "/*", "*/",
 ]
 
-# Symbols that strongly indicate code
-CODE_SYMBOLS = ["{", "}", "=>", "->", "==", "!=", ">=", "<=", "++", "--", "&&", "||"]
+# Patterns that look like indexing / TOC / page refs (dots + page number)
+_TOC_LINE = re.compile(r"\.{3,}")  # three or more consecutive dots
 
 
 def is_code(text: str) -> bool:
-    """Returns True if the text block looks like source code or a command."""
+    """Return True only if the block is clearly source code or a shell command."""
     stripped = text.strip()
     if not stripped:
         return False
 
-    # Check pattern keywords
-    for pattern in CODE_PATTERNS:
-        if pattern in stripped:
-            return True
+    # Table-of-contents dot leaders: never code
+    if _TOC_LINE.search(stripped):
+        return False
 
-    # Check code symbols
-    symbol_count = sum(1 for sym in CODE_SYMBOLS if sym in stripped)
-    if symbol_count >= 2:
+    # Strong keyword match at line start
+    if _CODE_START.search(stripped):
         return True
 
-    # High ratio of non-alpha characters is typical of code
+    # Count code-specific symbol pairs
+    symbol_hits = sum(1 for sym in _CODE_SYMBOLS if sym in stripped)
+    if symbol_hits >= 2:
+        return True
+
+    # High ratio of non-alpha chars — but only if the block is short
+    # (long prose can have punctuation; real code blocks tend to be short and dense)
     non_alpha = sum(1 for c in stripped if not c.isalpha() and not c.isspace())
     total = len(stripped)
-    if total > 10 and non_alpha / total > 0.45:
-        return True
+    if total > 0:
+        ratio = non_alpha / total
+        # Short, dense with punctuation → likely code
+        if total <= 120 and ratio > 0.55:
+            return True
+        # Long blocks are almost never code by this heuristic
+        if total > 120 and ratio > 0.70:
+            return True
 
     return False
 
 
 def is_title(text: str) -> bool:
-    """Returns True if the text block looks like a chapter title or heading."""
+    """Return True if the block looks like a heading or chapter title."""
     stripped = text.strip()
     if not stripped:
         return False
 
+    # TOC lines are not real titles — treat as body text
+    if _TOC_LINE.search(stripped):
+        return False
+
     words = stripped.split()
-    # Short (≤ 10 words), ends without period, and title-cased or uppercase
-    if len(words) <= 10 and not stripped.endswith("."):
-        if stripped.isupper() or stripped.istitle():
+    # Short — does not end with sentence-closing punctuation
+    if len(words) <= 12 and not stripped[-1] in ".,:;?!":
+        # Must have mostly capitalized words or be all-caps
+        cap_words = sum(1 for w in words if w and w[0].isupper())
+        if cap_words / len(words) >= 0.6:
             return True
+
     return False
 
 
 def classify(text: str) -> str:
-    """Returns 'code', 'title', or 'text'."""
+    """Classify a PDF text block as 'code', 'title', or 'body'."""
     if is_code(text):
         return "code"
     if is_title(text):
         return "title"
-    return "text"
+    return "body"
