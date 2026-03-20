@@ -274,11 +274,26 @@ def translate_pdf(
 
         for page_idx, page in enumerate(doc_in):
             logger.info("Extracting page %d / %d", page_idx + 1, total_pages)
-            blocks = page.get_text("blocks")
-            blocks.sort(key=lambda b: (round(b[1] / 10) * 10, b[0]))
+            blocks_norm = page.get_text("blocks")
+            blocks_dict = page.get_text("dict")["blocks"]
 
-            for block in blocks:
-                x0, y0, x1, y1, content, block_no, block_type = block
+            merged_blocks = []
+            for b_norm, b_dict in zip(blocks_norm, blocks_dict):
+                x0, y0, x1, y1, content, block_no, block_type = b_norm
+                max_size = 0.0
+                font_name = ""
+                if block_type == 0:
+                    for line in b_dict.get("lines", []):
+                        for span in line.get("spans", []):
+                            if span["size"] > max_size:
+                                max_size = span["size"]
+                                font_name = span["font"]
+                merged_blocks.append((x0, y0, x1, y1, content, block_no, block_type, max_size, font_name.lower()))
+
+            merged_blocks.sort(key=lambda b: (round(b[1] / 10) * 10, b[0]))
+
+            for block in merged_blocks:
+                x0, y0, x1, y1, content, block_no, block_type, max_size, font_name = block
 
                 if block_type == 1:  # image
                     try:
@@ -293,7 +308,7 @@ def translate_pdf(
                         scale = min(available_w / max(pix.width, 1), 1.0)
                         draw_w = pix.width * scale * (72 / 150)
                         draw_h = pix.height * scale * (72 / 150)
-                        content_blocks.append(("image", (str(img_file), draw_w, draw_h)))
+                        content_blocks.append(("image", (str(img_file), draw_w, draw_h), {}))
                     except Exception as exc:
                         logger.warning("Image extract failed p%d b%d: %s", page_idx, block_no, exc)
                     continue
@@ -302,17 +317,25 @@ def translate_pdf(
                 if not text:
                     continue
 
-                btype = classify(text)
-                if btype == "body":
+                is_mono = "mono" in font_name or "courier" in font_name or "consolas" in font_name
+                is_footer = y0 > 600 and max_size < 10.0
+
+                btype = "code" if is_mono else classify(text)
+                if is_footer and btype != "code":
+                    btype = "footer"
+
+                meta = {"size": round(max_size, 1), "footer": is_footer}
+
+                if btype == "body" and not is_footer:
                     # Smart split: TOC blocks get one entry per line;
                     # normal prose blocks get lines joined into a paragraph.
                     for sub in _split_block_lines(text):
                         if sub:
-                            content_blocks.append(("body", sub))
+                            content_blocks.append(("body", sub, meta))
                 elif btype == "code":
-                    content_blocks.append(("code", text))
+                    content_blocks.append(("code", text, meta))
                 else:
-                    content_blocks.append((btype, text))
+                    content_blocks.append((btype, text, meta))
 
             if progress_callback:
                 progress_callback(page_idx + 1, total_pages)
@@ -326,8 +349,8 @@ def translate_pdf(
         to_translate_idx: list[int] = []
         to_translate_txt: list[str] = []
 
-        for i, (btype, data) in enumerate(content_blocks):
-            if btype in ("title", "body") and isinstance(data, str):
+        for i, (btype, data, meta) in enumerate(content_blocks):
+            if btype in ("title", "body", "footer") and isinstance(data, str):
                 to_translate_idx.append(i)
                 to_translate_txt.append(data)
 
@@ -336,39 +359,37 @@ def translate_pdf(
 
         # Write back translations into content_blocks
         for idx, translated in zip(to_translate_idx, translated_texts):
-            btype, _ = content_blocks[idx]
-            content_blocks[idx] = (btype, translated)
+            btype, _, meta = content_blocks[idx]
+            content_blocks[idx] = (btype, translated, meta)
 
         # ── Pass 3: build PDF with ReportLab ─────────────────────────────────
         logger.info("Rendering output PDF…")
         story: list = []
 
-        for btype, data in content_blocks:
+        for btype, data, meta in content_blocks:
             if btype == "image":
                 img_file, w, h = data
                 story.append(Image(img_file, width=w, height=h))
                 story.append(Spacer(1, 4))
 
             elif btype == "code":
-                safe = (data
-                        .replace("&", "&amp;")
-                        .replace("<", "&lt;")
-                        .replace(">", "&gt;"))
+                safe = str(data).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 story.append(Preformatted(safe, styles["code"]))
 
-            elif btype == "title":
-                safe = (data
-                        .replace("&", "&amp;")
-                        .replace("<", "&lt;")
-                        .replace(">", "&gt;"))
-                story.append(Paragraph(safe, styles["title"]))
+            else:  # title, body, footer
+                safe = str(data).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                
+                font_size = meta.get("size", 10.5)
+                base_style = styles["title"] if btype == "title" else styles["body"]
 
-            else:  # body — text already cleaned and line-joined at extraction time
-                safe = (str(data)
-                        .replace("&", "&amp;")
-                        .replace("<", "&lt;")
-                        .replace(">", "&gt;"))
-                story.append(Paragraph(safe, styles["body"]))
+                if btype == "title" or font_size >= 13:
+                    safe = f'<b><font size="{font_size}">{safe}</font></b>'
+                elif meta.get("footer"):
+                    safe = f'<font size="{font_size}" color="#666666">{safe}</font>'
+                else:
+                    safe = f'<font size="{font_size}">{safe}</font>'
+
+                story.append(Paragraph(safe, base_style))
 
         doc_out = SimpleDocTemplate(
             output_path,
