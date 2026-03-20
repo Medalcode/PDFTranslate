@@ -210,15 +210,43 @@ def _build_styles() -> dict[str, ParagraphStyle]:
         spaceAfter=8,
         alignment=TA_JUSTIFY,
     )
-    title = ParagraphStyle(
-        "PDFTitle",
+    title_xl = ParagraphStyle(
+        "PDFTitleXL",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=24,
+        leading=28,
+        spaceBefore=18,
+        spaceAfter=12,
+        textColor=colors.HexColor("#1a1a2e"),
+    )
+    title_md = ParagraphStyle(
+        "PDFTitleMD",
         parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=18,
+        leading=22,
+        spaceBefore=14,
+        spaceAfter=8,
+        textColor=colors.HexColor("#1a1a2e"),
+    )
+    title_sm = ParagraphStyle(
+        "PDFTitleSM",
+        parent=styles["Heading3"],
         fontName="Helvetica-Bold",
         fontSize=13,
         leading=17,
-        spaceBefore=14,
+        spaceBefore=10,
         spaceAfter=6,
         textColor=colors.HexColor("#1a1a2e"),
+    )
+    footer = ParagraphStyle(
+        "PDFFooter",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        textColor=colors.HexColor("#666666"),
     )
     code = ParagraphStyle(
         "PDFCode",
@@ -235,7 +263,7 @@ def _build_styles() -> dict[str, ParagraphStyle]:
         borderWidth=0.5,
         borderPadding=6,
     )
-    return {"body": body, "title": title, "code": code}
+    return {"body": body, "title_xl": title_xl, "title_md": title_md, "title_sm": title_sm, "footer": footer, "code": code}
 
 
 # ---------------------------------------------------------------------------
@@ -380,14 +408,18 @@ def translate_pdf(
                 safe = str(data).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 
                 font_size = meta.get("size", 10.5)
-                base_style = styles["title"] if btype == "title" else styles["body"]
 
-                if btype == "title" or font_size >= 13:
-                    safe = f'<b><font size="{font_size}">{safe}</font></b>'
-                elif meta.get("footer"):
-                    safe = f'<font size="{font_size}" color="#666666">{safe}</font>'
+                if btype == "footer" or meta.get("footer"):
+                    base_style = styles["footer"]
+                elif btype == "title" or font_size >= 12.0:
+                    if font_size > 20.0:
+                        base_style = styles["title_xl"]
+                    elif font_size >= 14.0:
+                        base_style = styles["title_md"]
+                    else:
+                        base_style = styles["title_sm"]
                 else:
-                    safe = f'<font size="{font_size}">{safe}</font>'
+                    base_style = styles["body"]
 
                 story.append(Paragraph(safe, base_style))
 
