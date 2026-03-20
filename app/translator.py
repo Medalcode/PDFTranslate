@@ -36,18 +36,39 @@ PROTECTED = {
     "Hadoop", "HDFS", "YARN", "MapReduce", "Spark", "Hive", "Pig",
     "Flume", "Sqoop", "HBase", "ZooKeeper", "Avro", "Parquet", "Crunch",
     "Oozie", "Tez", "Kafka", "Storm", "Flink", "Cassandra", "MongoDB",
+    "Nutch", "ADAM", "Oozie", "Thrift",
     # Cloud / infra
     "AWS", "S3", "EC2", "GCS", "Azure", "Docker", "Kubernetes",
     # Languages / tools
     "Java", "Python", "Scala", "Ruby", "Maven", "Gradle", "Git",
+    "MRUnit", "Kerberos", "WebHDFS", "HttpFS",
     # Formats / protocols
     "JSON", "XML", "CSV", "HTTP", "REST", "JDBC", "ODBC", "SQL",
-    # O'Reilly / branding
-    "O'Reilly", "Cloudera", "Apache",
+    "ISBN", "API", "IDE", "GFS", "DAG", "UDF", "UDAF", "IDL",
+    # Social / branding — prevent literal translations
+    "Twitter", "Facebook", "YouTube", "LinkedIn", "GitHub", "Safari",
+    "O'Reilly", "Cloudera", "Apache", "Peachpit", "Syngress",
+    # Currency / country abbreviations
+    "US", "UK", "CAN",
 }
 
 _PH_START = "PROT"          # placeholder prefix
 _ph_map: dict[str, str] = {}
+
+# Soft-hyphen and hyphenated-line-break cleanup
+_SOFT_HYPHEN = re.compile(r"\xad")          # soft hyphen (0xAD)
+_HYPHEN_BREAK = re.compile(r"-(\n)\s*")    # word- \n word → join
+_BULLET_GLYPH = re.compile(r"[\u25a0\u25cf\u2022\u2023]")  # ■ ● • ‣
+
+
+def _clean_block(text: str) -> str:
+    """Remove PDF artefacts: soft hyphens, bad hyphenated line-breaks, bullet glyphs."""
+    text = _SOFT_HYPHEN.sub("", text)          # remove invisible soft hyphen
+    text = _HYPHEN_BREAK.sub("", text)         # join 'ex-\nample' → 'example'
+    text = _BULLET_GLYPH.sub("• ", text)       # normalise bullet glyphs
+    # Remove lone ■ (replacement char) that appear mid-word from bad encoding
+    text = re.sub(r"(?<=[a-zA-Z])\\u25a0(?=[a-zA-Z])", "", text)
+    return text
 
 
 def _protect(text: str) -> tuple[str, dict[str, str]]:
@@ -255,11 +276,14 @@ def translate_pdf(
                         logger.warning("Image extract failed p%d b%d: %s", page_idx, block_no, exc)
                     continue
 
-                text = content.strip()
+                text = _clean_block(content.strip())
                 if not text:
                     continue
 
                 btype = classify(text)
+                # For body text: join broken PDF lines into a single paragraph now
+                if btype == "body":
+                    text = " ".join(text.splitlines()).strip()
                 content_blocks.append((btype, text))
 
             if progress_callback:
@@ -311,9 +335,8 @@ def translate_pdf(
                         .replace(">", "&gt;"))
                 story.append(Paragraph(safe, styles["title"]))
 
-            else:  # body
-                joined = " ".join(data.splitlines()).strip() if isinstance(data, str) else str(data)
-                safe = (joined
+            else:  # body — text already cleaned and line-joined at extraction time
+                safe = (str(data)
                         .replace("&", "&amp;")
                         .replace("<", "&lt;")
                         .replace(">", "&gt;"))
