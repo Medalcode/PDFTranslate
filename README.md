@@ -16,9 +16,9 @@
 | Layer | Technology |
 |-------|-----------|
 | Backend | Python · FastAPI · Uvicorn |
-| PDF Read | PyMuPDF (fitz) |
-| PDF Write | ReportLab |
-| Translation | deep-translator (Google Translate) |
+| PDF Read & Overlay | PyMuPDF (fitz) - v2 Architecture |
+| Primary Translation | LLMs via OpenAI / Google Generative AI SDK |
+| Translator Fallback | Google Translate (deep-translator) with Circuit Breaker |
 | Frontend | Vanilla HTML · CSS · JavaScript |
 
 ## Quick Start
@@ -84,21 +84,28 @@ Edit `.env`:
 ```env
 SOURCE_LANG=en   # Input language
 TARGET_LANG=es   # Output language
+
+# LLM Configuration (Optional, falls back to Google Translate if empty/fails)
+# Example for Groq
+LLM_PROVIDER=openai
+LLM_API_KEY=your_api_key_here
+LLM_BASE_URL=https://api.groq.com/openai/v1
+LLM_MODEL=llama-3.3-70b-versatile
 ```
 
-Any language code supported by Google Translate works (e.g. `fr`, `de`, `pt`).
+Any language code supported by Google Translate/LLM works (e.g. `fr`, `de`, `pt`).
 
-## How It Works
+## How It Works (v2 Architecture)
 
 1. User uploads a PDF via the web UI.
 2. FastAPI starts a background translation task.
-3. **PyMuPDF** reads each page, extracting text blocks and images.
-   - Blocks are sorted top-to-bottom, left-to-right to preserve reading order.
-   - Text is classified: `code` (never translated), `title`, or `body`.
-   - Images are captured as high-resolution PNGs.
-4. **Google Translate** (via `deep-translator`) translates each body/title block with retry logic.
-5. **ReportLab** assembles a brand-new PDF from flowable elements — no coordinates, no overlap.
-6. The output PDF is saved and made available for download.
+3. **Pass 1: Extraction**. **PyMuPDF** reads each page, extracting text blocks, fonts, and exact bounding boxes.
+    - Text is classified: `code` (never translated), `title`, or `body`.
+4. **Pass 2: Translation**.
+    - The text is grouped into batches and sent to the configured **LLM (OpenAI/Gemini/Groq)**.
+    - **Circuit Breaker:** If the LLM hits persistent rate limits or quotas (e.g., HTTP 429), a circuit breaker triggers. The system instantly aborts the LLM and falls back to **Google Translate** to finish the document. This prevents the pipeline from hanging for hours.
+5. **Pass 3: Overlay**. The translated text is carefully re-inserted onto the exact *original* coordinates on the document, automatically downscaling the font if the translation is longer than the original text. The original text underneath is redacted.
+6. The exact output PDF is saved and made available for download, with 0% layout deformation.
 
 ## License
 

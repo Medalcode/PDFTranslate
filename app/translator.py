@@ -1,42 +1,76 @@
 """
-Core PDF translation engine.
+PDFTranslate — Core Translation Engine v2
+==========================================
 
-Pipeline: PDF → Bloques estructurados → Traducción por lotes → Nuevo PDF limpio (ReportLab)
+Architecture change from v1:
+  ❌ v1: Extract → Translate → Rebuild with ReportLab (loses layout)
+  ✅ v2: Extract → Translate → OVERLAY on original PDF (preserves layout)
+
+Pipeline:
+  1. Pass 1 — Extract all text blocks with bounding boxes (PyMuPDF)
+  2. Pass 2 — Batch-translate with LLM (structured prompt) or Google Translate fallback
+  3. Pass 3 — Overlay: redact original text, insert translated text at same position
+
+LLM providers supported (via .env):
+  - gemini  → google-generativeai (recommended)
+  - openai  → openai SDK
+  - custom  → any OpenAI-compatible endpoint (Together AI, Ollama, etc.)
+  - (none)  → falls back to deep-translator / Google Translate
 """
+
+from __future__ import annotations
+
 import logging
 import re
 import time
-import tempfile
-from pathlib import Path
+from typing import Optional
 
 import fitz  # PyMuPDF
-from deep_translator import GoogleTranslator
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import cm
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Preformatted, Image, PageBreak
-from reportlab.lib.enums import TA_JUSTIFY
 
 from app.config import SOURCE_LANG, TARGET_LANG
 from app.text_classifier import classify
 
 logger = logging.getLogger(__name__)
 
-MAX_CHUNK = 4500          # conservative Google Translate limit per call
-BATCH_SEP = " 🔹 "        # unique separator for batch calls (emoji not translated)
-BATCH_MAX = 3000          # max total chars per batch API call
-API_DELAY = 1.2           # seconds between API calls
 
-# ---------------------------------------------------------------------------
-# Technical terms that must NEVER be translated
-# ---------------------------------------------------------------------------
-PROTECTED = {
+# ── Prompts ───────────────────────────────────────────────────────────────────
+
+_TRANSLATION_PROMPT = """\
+You are a professional technical translator specialized in preserving document structure.
+
+Translate the following numbered text blocks from English to Spanish.
+
+STRICT RULES:
+1. Return EXACTLY the same number of numbered blocks in [N] format.
+2. DO NOT merge, split, or reorder blocks.
+3. Preserve line breaks and bullet points within each block.
+4. DO NOT translate: source code, commands, file paths, URLs, or variable names.
+5. Proper nouns, product names, and acronyms stay unchanged.
+6. If a block should not be translated, return it as-is.
+7. Output ONLY the translated blocks — no commentary.
+
+BLOCKS:
+{blocks}
+
+TRANSLATION:"""
+
+_LENGTH_ADJUST_PROMPT = """\
+The Spanish text below must fit in roughly {target_len} characters.
+Shorten it while preserving ALL key information. Be concise and natural.
+Return the shortened text only — no commentary.
+
+TEXT:
+{text}"""
+
+
+# ── Protected technical terms ─────────────────────────────────────────────────
+
+_PROTECTED_TERMS = {
     # Apache ecosystem
     "Hadoop", "HDFS", "YARN", "MapReduce", "Spark", "Hive", "Pig",
-    "Flume", "Sqoop", "HBase", "ZooKeeper", "Avro", "Parquet", "Crunch",
+    "Flume", "Sqoop", "HBase", "ZooKeeper", "Avro", "Parquet",
     "Oozie", "Tez", "Kafka", "Storm", "Flink", "Cassandra", "MongoDB",
-    "Nutch", "ADAM", "Oozie", "Thrift",
+    "Thrift", "Crunch", "Nutch",
     # Cloud / infra
     "AWS", "S3", "EC2", "GCS", "Azure", "Docker", "Kubernetes",
     # Languages / tools
@@ -45,230 +79,310 @@ PROTECTED = {
     # Formats / protocols
     "JSON", "XML", "CSV", "HTTP", "REST", "JDBC", "ODBC", "SQL",
     "ISBN", "API", "IDE", "GFS", "DAG", "UDF", "UDAF", "IDL",
-    # Social / branding — prevent literal translations
+    # Social / branding
     "Twitter", "Facebook", "YouTube", "LinkedIn", "GitHub", "Safari",
     "O'Reilly", "Cloudera", "Apache", "Peachpit", "Syngress",
-    # Currency / country abbreviations
+    # Misc
     "US", "UK", "CAN",
 }
 
-_PH_START = "PROT"          # placeholder prefix
-_ph_map: dict[str, str] = {}
-
-# Soft-hyphen and hyphenated-line-break cleanup
-_SOFT_HYPHEN = re.compile(r"\xad")          # soft hyphen (0xAD)
-_HYPHEN_BREAK = re.compile(r"-(\n)\s*")    # word- \n word → join
-_BULLET_GLYPH = re.compile(r"[\u25a0\u25cf\u2022\u2023]")  # ■ ● • ‣
-
-
-def _clean_block(text: str) -> str:
-    """Remove PDF artefacts: soft hyphens, bad hyphenated line-breaks, bullet glyphs."""
-    text = _SOFT_HYPHEN.sub("", text)
-    text = _HYPHEN_BREAK.sub("", text)
-    text = _BULLET_GLYPH.sub("\u2022 ", text)
-    return text
-
-
-_TOC_ENTRY = re.compile(
-    r"(\.{3,}|\s\d{1,4}\s*$)",
-    re.MULTILINE,
+_PH_PREFIX = "PROT"
+_PROTECTED_RE = re.compile(
+    r"\b(" + "|".join(re.escape(t) for t in _PROTECTED_TERMS) + r")\b"
 )
 
 
-def _split_block_lines(text: str) -> list[str]:
-    """
-    For TOC blocks, return each line separately so they render as individual
-    entries. A block is TOC-like when ≥2 of its lines have dot-leaders or
-    trailing page numbers.
-    For normal prose, returns a single joined string.
-    """
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if len(lines) <= 1:
-        return [text.strip()]
-
-    toc_count = sum(1 for l in lines if _TOC_ENTRY.search(l))
-    if toc_count >= 2:
-        return lines  # keep structure
-
-    return [" ".join(lines)]  # join prose paragraph
-
-
 def _protect(text: str) -> tuple[str, dict[str, str]]:
-    """Replace protected terms with unique placeholders."""
     ph_map: dict[str, str] = {}
     idx = 0
-    for term in PROTECTED:
-        # match whole-word (case-sensitive)
-        pattern = r"\b" + re.escape(term) + r"\b"
-        placeholder = f"{_PH_START}{idx:03d}X"
-        if re.search(pattern, text):
-            text = re.sub(pattern, placeholder, text)
-            ph_map[placeholder] = term
+    for m in _PROTECTED_RE.finditer(text):
+        term = m.group(0)
+        if term not in ph_map.values():
+            ph = f"{_PH_PREFIX}{idx:03d}X"
+            ph_map[ph] = term
             idx += 1
+    for ph, term in ph_map.items():
+        text = re.sub(r"\b" + re.escape(term) + r"\b", ph, text)
     return text, ph_map
 
 
 def _restore(text: str, ph_map: dict[str, str]) -> str:
-    """Restore protected terms from placeholders."""
-    for ph, original in ph_map.items():
-        text = text.replace(ph, original)
+    for ph, term in ph_map.items():
+        text = text.replace(ph, term)
     return text
 
 
-# ---------------------------------------------------------------------------
-# Translation helpers
-# ---------------------------------------------------------------------------
+# ── Text cleaning ─────────────────────────────────────────────────────────────
 
-def _call_api(text: str, translator: GoogleTranslator, max_retries: int = 4) -> str:
-    """Single call to the translation API with exponential-backoff retry."""
-    for attempt in range(max_retries):
+_SOFT_HYPHEN  = re.compile(r"\xad")
+_HYPHEN_BREAK = re.compile(r"-(\n)\s*")
+_BULLET_GLYPH = re.compile(r"[\u25a0\u25cf\u2022\u2023]")
+
+
+def _clean_text(text: str) -> str:
+    text = _SOFT_HYPHEN.sub("", text)
+    text = _HYPHEN_BREAK.sub("", text)
+    text = _BULLET_GLYPH.sub("• ", text)
+    return text.strip()
+
+
+# ── LLM backends ──────────────────────────────────────────────────────────────
+
+class _LLMBase:
+    def call(self, prompt: str) -> str:
+        raise NotImplementedError
+
+
+class _GeminiBackend(_LLMBase):
+    def __init__(self, api_key: str, model: str):
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        self._model = genai.GenerativeModel(model or "gemini-2.0-flash")
+
+    def call(self, prompt: str) -> str:
         try:
-            time.sleep(API_DELAY)
-            result = translator.translate(text)
-            if result:
-                return result
-            logger.warning("API returned None on attempt %d, retrying…", attempt + 1)
+            r = self._model.generate_content(prompt)
+            return r.text or ""
         except Exception as exc:
-            wait = 2 ** attempt
-            logger.warning("API error attempt %d/%d (%s). Waiting %ds…",
-                           attempt + 1, max_retries, exc, wait)
-            time.sleep(wait)
-    logger.error("All retries exhausted. Returning original text.")
-    return text
+            logger.error("Gemini API error: %s", exc)
+            return f"Error: {exc}"
 
 
-def _translate_chunk(text: str, translator: GoogleTranslator) -> str:
-    """Protect terms, translate, restore."""
-    protected_text, ph_map = _protect(text)
-    translated = _call_api(protected_text, translator)
-    return _restore(translated, ph_map)
+class _OpenAIBackend(_LLMBase):
+    def __init__(self, api_key: str, model: str, base_url: str):
+        from openai import OpenAI
+        kwargs: dict = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self._client = OpenAI(**kwargs)
+        self._model = model or "gpt-4o-mini"
+
+    def call(self, prompt: str) -> str:
+        try:
+            r = self._client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+            )
+            return r.choices[0].message.content or ""
+        except Exception as exc:
+            logger.error("OpenAI API error: %s", exc)
+            return f"Error: {exc}"
 
 
-def _translate_batch(texts: list[str], translator: GoogleTranslator) -> list[str]:
-    """
-    Translate a list of strings in as few API calls as possible by batching.
-    Uses a unique separator that Google won't translate.
-    """
-    if not texts:
-        return texts
+def _build_llm(provider: str, api_key: str, model: str, base_url: str) -> Optional[_LLMBase]:
+    if not api_key:
+        return None
+    try:
+        if provider == "gemini":
+            return _GeminiBackend(api_key, model)
+        if provider in ("openai", "custom", "together"):
+            return _OpenAIBackend(api_key, model, base_url)
+    except ImportError as exc:
+        logger.warning("LLM SDK not installed for '%s': %s", provider, exc)
+    except Exception as exc:
+        logger.warning("LLM backend init failed: %s", exc)
+    return None
 
-    results: list[str] = []
-    batch: list[str] = []
-    batch_len = 0
 
-    def flush(batch: list[str]) -> list[str]:
-        if not batch:
-            return []
-        joined = BATCH_SEP.join(batch)
-        protected_joined, ph_map = _protect(joined)
-        translated_joined = _call_api(protected_joined, translator)
-        translated_joined = _restore(translated_joined, ph_map)
-        parts = translated_joined.split(BATCH_SEP.strip())
-        # If split count doesn't match, fallback to per-item
-        if len(parts) == len(batch):
-            return [p.strip() for p in parts]
-        # Fallback: translate individually
-        logger.warning("Batch split mismatch (%d vs %d), translating individually.",
-                       len(parts), len(batch))
-        return [_translate_chunk(t, translator) for t in batch]
+# ── LLM translation ───────────────────────────────────────────────────────────
 
-    for text in texts:
-        text_len = len(text)
-        if text_len > MAX_CHUNK:
-            # Flush current batch first
-            results.extend(flush(batch))
-            batch = []
-            batch_len = 0
-            # Translate oversized text in one call
-            results.append(_translate_chunk(text, translator))
-            continue
+_LLM_BATCH = 20          # blocks per LLM call
+_LLM_DELAY = 0.5         # courtesy delay between calls
 
-        if batch and batch_len + len(BATCH_SEP) + text_len > BATCH_MAX:
-            results.extend(flush(batch))
-            batch = []
-            batch_len = 0
 
-        batch.append(text)
-        batch_len += text_len + len(BATCH_SEP)
+def _parse_numbered_blocks(response: str, expected: int) -> Optional[list[str]]:
+    """Parse [N] block format from LLM response."""
+    pattern = re.compile(r"\[(\d+)\]\s*(.*?)(?=\[\d+\]|\Z)", re.DOTALL)
+    matches = pattern.findall(response)
+    if not matches:
+        return None
+    parsed: dict[int, str] = {int(n): t.strip() for n, t in matches}
+    result = [parsed.get(i, "") for i in range(1, expected + 1)]
+    # Reject if more than 40% of blocks are empty
+    if sum(1 for r in result if r) < expected * 0.6:
+        return None
+    return result
 
-    results.extend(flush(batch))
+
+class LLMQuotaExceeded(Exception):
+    pass
+
+
+def _translate_with_llm(texts: list[str], llm: _LLMBase) -> list[str]:
+    """Translate a list of blocks using LLM numbered-block batching."""
+    results = list(texts)  # default: unchanged
+    consecutive_failures = 0
+
+    for start in range(0, len(texts), _LLM_BATCH):
+        batch = texts[start : start + _LLM_BATCH]
+        # Protect terms before sending
+        protected_batch, ph_maps = [], []
+        for t in batch:
+            p, ph = _protect(t)
+            protected_batch.append(p)
+            ph_maps.append(ph)
+
+        numbered = "\n\n".join(f"[{i+1}] {t}" for i, t in enumerate(protected_batch))
+        prompt = _TRANSLATION_PROMPT.format(blocks=numbered)
+
+        success = False
+        for attempt in range(4):  # Reduced to 4 attempts to avoid huge hangs
+            try:
+                time.sleep(_LLM_DELAY)
+                response = llm.call(prompt)
+                
+                if "429" in response or "quota" in response.lower() or "rate limit" in response.lower():
+                    raise ValueError(f"Rate Limit/Quota: {response}")
+                    
+                parsed = _parse_numbered_blocks(response, len(batch))
+                if parsed:
+                    for j, (translated, ph_map) in enumerate(zip(parsed, ph_maps)):
+                        # Restore protected terms, use original if translation blank
+                        t = _restore(translated, ph_map) if translated else batch[j]
+                        results[start + j] = t
+                    success = True
+                    consecutive_failures = 0
+                    break
+                logger.warning("LLM block parse failed (attempt %d), retrying…", attempt + 1)
+            except Exception as exc:
+                wait = 5 + (2 ** attempt)  # Start at 6s wait, scale slowly
+                logger.warning("LLM call error attempt %d: %s. Wait %ds…", attempt + 1, exc, wait)
+                time.sleep(wait)
+
+        if not success:
+            logger.error("LLM batch %d failed after all retries.", start)
+            consecutive_failures += 1
+            if consecutive_failures >= 3:
+                logger.error("Too many consecutive LLM failures. Aborting LLM translation.")
+                raise LLMQuotaExceeded("Consecutive LLM failures exceeded limit")
+
     return results
 
 
-# ---------------------------------------------------------------------------
-# ReportLab styles
-# ---------------------------------------------------------------------------
+# ── Google Translate fallback ─────────────────────────────────────────────────
 
-def _build_styles() -> dict[str, ParagraphStyle]:
-    styles = getSampleStyleSheet()
-    body = ParagraphStyle(
-        "PDFBody",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=10,
-        leading=14,
-        spaceAfter=8,
-        alignment=TA_JUSTIFY,
-    )
-    title_xl = ParagraphStyle(
-        "PDFTitleXL",
-        parent=styles["Heading1"],
-        fontName="Helvetica-Bold",
-        fontSize=24,
-        leading=28,
-        spaceBefore=18,
-        spaceAfter=12,
-        textColor=colors.HexColor("#1a1a2e"),
-    )
-    title_md = ParagraphStyle(
-        "PDFTitleMD",
-        parent=styles["Heading2"],
-        fontName="Helvetica-Bold",
-        fontSize=18,
-        leading=22,
-        spaceBefore=14,
-        spaceAfter=8,
-        textColor=colors.HexColor("#1a1a2e"),
-    )
-    title_sm = ParagraphStyle(
-        "PDFTitleSM",
-        parent=styles["Heading3"],
-        fontName="Helvetica-Bold",
-        fontSize=13,
-        leading=17,
-        spaceBefore=10,
-        spaceAfter=6,
-        textColor=colors.HexColor("#1a1a2e"),
-    )
-    footer = ParagraphStyle(
-        "PDFFooter",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=8,
-        leading=10,
-        textColor=colors.HexColor("#666666"),
-    )
-    code = ParagraphStyle(
-        "PDFCode",
-        parent=styles["Code"],
-        fontName="Courier",
-        fontSize=8,
-        leading=11,
-        leftIndent=12,
-        rightIndent=12,
-        spaceBefore=6,
-        spaceAfter=6,
-        backColor=colors.HexColor("#f5f5f5"),
-        borderColor=colors.HexColor("#cccccc"),
-        borderWidth=0.5,
-        borderPadding=6,
-    )
-    return {"body": body, "title_xl": title_xl, "title_md": title_md, "title_sm": title_sm, "footer": footer, "code": code}
+_GT_DELAY    = 1.2
+_GT_BATCH_SEP = " 🔹 "
+_GT_BATCH_MAX = 3000
 
 
-# ---------------------------------------------------------------------------
-# Main translate function
-# ---------------------------------------------------------------------------
+def _translate_with_google(texts: list[str], source: str, target: str) -> list[str]:
+    from deep_translator import GoogleTranslator
+    translator = GoogleTranslator(source=source, target=target)
+    final: dict[int, str] = {}
+
+    def _call(t: str) -> str:
+        for attempt in range(4):
+            try:
+                time.sleep(_GT_DELAY)
+                return translator.translate(t) or t
+            except Exception as exc:
+                time.sleep(2 ** attempt)
+                logger.warning("GT retry %d: %s", attempt + 1, exc)
+        return t
+
+    def flush(batch: list[str], idxs: list[int]) -> None:
+        if not batch:
+            return
+        joined = _GT_BATCH_SEP.join(batch)
+        p_joined, ph_map = _protect(joined)
+        translated_joined = _call(p_joined)
+        translated_joined = _restore(translated_joined, ph_map)
+        parts = translated_joined.split(_GT_BATCH_SEP.strip())
+        if len(parts) == len(batch):
+            for idx, t in zip(idxs, parts):
+                final[idx] = t.strip()
+            return
+        # Fallback: per-item
+        logger.warning("GT batch split mismatch — translating individually.")
+        for idx, t in zip(idxs, batch):
+            p_t, ph = _protect(t)
+            final[idx] = _restore(_call(p_t), ph)
+
+    batch: list[str] = []
+    idxs:  list[int] = []
+    batch_len = 0
+
+    for i, text in enumerate(texts):
+        if len(text) > 4500:
+            flush(batch, idxs)
+            batch, idxs, batch_len = [], [], 0
+            p_t, ph = _protect(text)
+            final[i] = _restore(_call(p_t), ph)
+            continue
+        if batch and batch_len + len(_GT_BATCH_SEP) + len(text) > _GT_BATCH_MAX:
+            flush(batch, idxs)
+            batch, idxs, batch_len = [], [], 0
+        batch.append(text)
+        idxs.append(i)
+        batch_len += len(text) + len(_GT_BATCH_SEP)
+
+    flush(batch, idxs)
+    return [final.get(i, texts[i]) for i in range(len(texts))]
+
+
+# ── PDF font mapping ──────────────────────────────────────────────────────────
+
+def _pdf_fontname(font_name: str, bold: bool, italic: bool) -> str:
+    """Map a PDF font name to a PyMuPDF base-14 font identifier."""
+    fn = font_name.lower()
+    is_mono  = "mono" in fn or "courier" in fn or "consolas" in fn or "code" in fn
+    is_times = "times" in fn or "serif" in fn
+
+    if is_mono:
+        if bold and italic: return "cobi"
+        if bold:            return "cobo"
+        if italic:          return "coit"
+        return "cour"
+    if is_times:
+        if bold and italic: return "tibi"
+        if bold:            return "tibo"
+        if italic:          return "tiit"
+        return "tiro"
+    # Default: Helvetica
+    if bold and italic: return "hebi"
+    if bold:            return "hebo"
+    if italic:          return "heit"
+    return "helv"
+
+
+# ── Overlay helpers ───────────────────────────────────────────────────────────
+
+_MIN_FONT = 6.0
+
+
+def _insert_autofit(
+    page:      fitz.Page,
+    rect:      fitz.Rect,
+    text:      str,
+    font_size: float,
+    font_name: str,
+    bold:      bool,
+    italic:    bool,
+    color:     tuple,
+) -> None:
+    """Insert text into rect, shrinking font until it fits."""
+    fname = _pdf_fontname(font_name, bold, italic)
+    fs = max(font_size, 7.0)  # don't start below 7pt
+
+    while fs >= _MIN_FONT:
+        rc = page.insert_textbox(
+            rect, text,
+            fontname=fname,
+            fontsize=fs,
+            color=color,
+            align=0,   # left
+        )
+        if rc >= 0:
+            return
+        fs -= 0.5
+
+    # Last resort at minimum size — let PyMuPDF truncate
+    page.insert_textbox(rect, text, fontname=fname, fontsize=_MIN_FONT, color=color)
+
+
+# ── Main entry point ──────────────────────────────────────────────────────────
 
 def translate_pdf(
     input_path: str,
@@ -278,177 +392,158 @@ def translate_pdf(
     progress_callback=None,
 ) -> None:
     """
-    Translate a PDF using a clean PDF → ReportLab rebuild pipeline.
+    Translate a PDF document using the v2 overlay pipeline.
 
-    Steps:
-      1. Extract text blocks and images per page with PyMuPDF.
-      2. Classify each block (code / title / body text).
-      3. Batch-translate all non-code blocks together (fewer API calls → fewer rate-limit errors).
-      4. Rebuild a brand-new PDF with ReportLab (proper text flow, no overlaps, no blank pages).
+    Key difference from v1:
+      - Images, borders, and decorations remain untouched (they're not text).
+      - Text is redacted in-place and replaced with the translation at the
+        exact same bounding box — no ReportLab reconstruction needed.
     """
-    logger.info("Starting translation pipeline: %s", input_path)
-    translator = GoogleTranslator(source=source_lang, target=target_lang)
-    styles = _build_styles()
+    from app.config import LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL
 
-    doc_in = fitz.open(input_path)
-    total_pages = len(doc_in)
+    logger.info("PDFTranslate v2 | input: %s", input_path)
 
-    # ── Pass 1: extract all content blocks ──────────────────────────────────
-    # Each entry: ("code"|"title"|"body"|"image", data)
-    content_blocks: list[tuple[str, object]] = []
+    # Setup translation backend
+    llm = _build_llm(LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL)
+    if llm:
+        logger.info("LLM backend: %s (%s)", LLM_PROVIDER, LLM_MODEL or "default model")
+    else:
+        logger.info("No LLM configured — using Google Translate fallback")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
+    doc = fitz.open(input_path)
+    total_pages = len(doc)
 
-        for page_idx, page in enumerate(doc_in):
-            logger.info("Extracting page %d / %d", page_idx + 1, total_pages)
-            blocks_norm = page.get_text("blocks")
-            blocks_dict = page.get_text("dict")["blocks"]
+    # ── Pass 1: Extract all text blocks ──────────────────────────────────────
+    all_blocks: list[dict] = []
 
-            merged_blocks = []
-            for b_norm, b_dict in zip(blocks_norm, blocks_dict):
-                x0, y0, x1, y1, content, block_no, block_type = b_norm
-                max_size = 0.0
-                font_name = ""
-                if block_type == 0:
-                    for line in b_dict.get("lines", []):
-                        for span in line.get("spans", []):
-                            if span["size"] > max_size:
-                                max_size = span["size"]
-                                font_name = span["font"]
-                merged_blocks.append((x0, y0, x1, y1, content, block_no, block_type, max_size, font_name.lower()))
+    for page_idx, page in enumerate(doc):
+        logger.info("Extracting page %d / %d", page_idx + 1, total_pages)
+        raw = page.get_text("dict")
 
-            merged_blocks.sort(key=lambda b: (round(b[1] / 10) * 10, b[0]))
+        for block in raw["blocks"]:
+            if block["type"] == 1:           # image block — keep as-is
+                continue
 
-            for block in merged_blocks:
-                x0, y0, x1, y1, content, block_no, block_type, max_size, font_name = block
+            # Aggregate text and font metadata across all spans
+            full_text = ""
+            max_size  = 0.0
+            font_name = ""
+            is_bold   = False
+            is_italic = False
+            is_mono   = False
+            color     = (0, 0, 0)
 
-                if block_type == 1:  # image
-                    try:
-                        rect = fitz.Rect(x0, y0, x1, y1)
-                        # Skip very small image clips (likely noise / decorations)
-                        if rect.width < 20 or rect.height < 20:
-                            continue
-                        pix = page.get_pixmap(clip=rect, dpi=150)
-                        img_file = tmp_path / f"img_{page_idx}_{block_no}.png"
-                        pix.save(str(img_file))
-                        available_w = A4[0] - 4 * cm
-                        scale = min(available_w / max(pix.width, 1), 1.0)
-                        draw_w = pix.width * scale * (72 / 150)
-                        draw_h = pix.height * scale * (72 / 150)
-                        content_blocks.append(("image", (str(img_file), draw_w, draw_h), {}))
-                    except Exception as exc:
-                        logger.warning("Image extract failed p%d b%d: %s", page_idx, block_no, exc)
-                    continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    full_text += span.get("text", "")
+                    sz = span.get("size", 0)
+                    fn = span.get("font", "").lower()
+                    if sz > max_size:
+                        max_size  = sz
+                        font_name = fn
+                    if any(k in fn for k in ("bold", "black", "semibold", "heavy")):
+                        is_bold = True
+                    if any(k in fn for k in ("italic", "oblique")):
+                        is_italic = True
+                    if any(k in fn for k in ("mono", "courier", "consolas", "code")):
+                        is_mono = True
+                    # Decode span color (packed int → RGB float tuple)
+                    c = span.get("color", 0)
+                    if isinstance(c, int):
+                        color = (
+                            ((c >> 16) & 0xFF) / 255,
+                            ((c >> 8)  & 0xFF) / 255,
+                            ( c        & 0xFF) / 255,
+                        )
+                full_text += "\n"
 
-                text = _clean_block(content.strip())
-                if not text:
-                    continue
+            text = _clean_text(full_text)
+            if not text:
+                continue
 
-                is_footer = (y0 > 750 or (y0 > 600 and max_size < 10.0))
-                is_header = y0 < 60 and max_size < 10.0
+            rect = fitz.Rect(block["bbox"])
 
-                if is_footer or is_header:
-                    logger.debug("Skipping header/footer text on page %d: %s", page_idx, text)
-                    continue  # Filter out entirely to prevent random text from showing up
+            # Filter out running headers and footers
+            is_header = rect.y0 < 55 and max_size < 10.0
+            is_footer = rect.y0 > 750 or (rect.y0 > 600 and max_size < 10.0)
+            if is_header or is_footer:
+                logger.debug("Skipping header/footer on page %d: %r", page_idx, text[:60])
+                continue
 
-                is_mono = "mono" in font_name or "courier" in font_name or "consolas" in font_name
-                is_bold = "bold" in font_name or "semibold" in font_name or "black" in font_name
-                is_italic = "italic" in font_name or "oblique" in font_name
+            # Classify block type
+            btype = "code" if is_mono else classify(text)
 
-                btype = "code" if is_mono else classify(text)
+            all_blocks.append({
+                "page":      page_idx,
+                "rect":      rect,
+                "text":      text,
+                "type":      btype,
+                "font_size": max(max_size, 7.0),
+                "font_name": font_name,
+                "bold":      is_bold,
+                "italic":    is_italic,
+                "color":     color,
+            })
 
-                meta = {
-                    "size": round(max_size, 1), 
-                    "page": page_idx,
-                    "bold": is_bold,
-                    "italic": is_italic
-                }
+        if progress_callback:
+            progress_callback(page_idx + 1, total_pages)
 
-                if btype == "body":
-                    # Smart split: TOC blocks get one entry per line;
-                    # normal prose blocks get lines joined into a paragraph.
-                    for sub in _split_block_lines(text):
-                        if sub:
-                            content_blocks.append(("body", sub, meta))
-                elif btype == "code":
-                    content_blocks.append(("code", text, meta))
-                else:
-                    content_blocks.append((btype, text, meta))
+    # ── Pass 2: Translate all translatable blocks ─────────────────────────────
+    translatable_idx = [
+        i for i, b in enumerate(all_blocks)
+        if b["type"] in ("body", "title")
+    ]
+    texts_to_translate = [all_blocks[i]["text"] for i in translatable_idx]
 
-            if progress_callback:
-                progress_callback(page_idx + 1, total_pages)
+    logger.info("Translating %d blocks (%d total extracted)…",
+                len(texts_to_translate), len(all_blocks))
 
-        doc_in.close()
+    if texts_to_translate:
+        if llm:
+            try:
+                translated = _translate_with_llm(texts_to_translate, llm)
+            except LLMQuotaExceeded as exc:
+                logger.error("LLM aborted (%s). Switching to Google Translate fallback...", exc)
+                translated = _translate_with_google(texts_to_translate, source_lang, target_lang)
+            except Exception as exc:
+                logger.error("LLM unexpected error: %s. Switching to Google Translate fallback...", exc)
+                translated = _translate_with_google(texts_to_translate, source_lang, target_lang)
+        else:
+            translated = _translate_with_google(texts_to_translate, source_lang, target_lang)
 
-        # ── Pass 2: batch-translate all translatable blocks ──────────────────
-        logger.info("Translating %d blocks in batches…", len(content_blocks))
+        for i, t in zip(translatable_idx, translated):
+            all_blocks[i]["translated"] = t
 
-        # Collect indices and texts of blocks that need translation
-        to_translate_idx: list[int] = []
-        to_translate_txt: list[str] = []
+    # Non-translatable blocks keep their original text (code, etc.)
+    for b in all_blocks:
+        b.setdefault("translated", b["text"])
 
-        for i, (btype, data, meta) in enumerate(content_blocks):
-            if btype in ("title", "body", "footer") and isinstance(data, str):
-                to_translate_idx.append(i)
-                to_translate_txt.append(data)
+    # ── Pass 3: Overlay — redact originals, insert translations ──────────────
+    logger.info("Applying overlay to %d pages…", total_pages)
 
-        logger.info("Sending %d text blocks to translator…", len(to_translate_txt))
-        translated_texts = _translate_batch(to_translate_txt, translator)
+    for page_idx, page in enumerate(doc):
+        page_blocks = [b for b in all_blocks if b["page"] == page_idx]
+        if not page_blocks:
+            continue
 
-        # Write back translations into content_blocks
-        for idx, translated in zip(to_translate_idx, translated_texts):
-            btype, _, meta = content_blocks[idx]
-            content_blocks[idx] = (btype, translated, meta)
+        # Step 3a — Mark all text regions for redaction (white fill)
+        for b in page_blocks:
+            page.add_redact_annot(b["rect"], fill=(1, 1, 1))
+        page.apply_redactions()
 
-        # ── Pass 3: build PDF with ReportLab ─────────────────────────────────
-        logger.info("Rendering output PDF…")
-        story: list = []
-        current_page = 0
+        # Step 3b — Insert translated text at the same position
+        for b in page_blocks:
+            _insert_autofit(
+                page      = page,
+                rect      = b["rect"],
+                text      = b["translated"],
+                font_size = b["font_size"],
+                font_name = b["font_name"],
+                bold      = b["bold"],
+                italic    = b["italic"],
+                color     = b["color"],
+            )
 
-        for btype, data, meta in content_blocks:
-            page_idx = meta.get("page", current_page)
-            if page_idx > current_page:
-                story.append(PageBreak())
-                current_page = page_idx
-
-            if btype == "image":
-                img_file, w, h = data
-                story.append(Image(img_file, width=w, height=h))
-                story.append(Spacer(1, 4))
-
-            elif btype == "code":
-                safe = str(data).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                story.append(Preformatted(safe, styles["code"]))
-
-            else:  # title, body
-                safe = str(data).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                
-                font_size = meta.get("size", 10.5)
-
-                if btype == "title" or font_size >= 12.0:
-                    if font_size > 20.0:
-                        base_style = styles["title_xl"]
-                    elif font_size >= 14.0:
-                        base_style = styles["title_md"]
-                    else:
-                        base_style = styles["title_sm"]
-                else:
-                    base_style = styles["body"]
-
-                if meta.get("bold"):
-                    safe = f"<b>{safe}</b>"
-                if meta.get("italic"):
-                    safe = f"<i>{safe}</i>"
-
-                story.append(Paragraph(safe, base_style))
-
-        doc_out = SimpleDocTemplate(
-            output_path,
-            pagesize=A4,
-            leftMargin=2 * cm, rightMargin=2 * cm,
-            topMargin=2 * cm,  bottomMargin=2 * cm,
-        )
-        doc_out.build(story)
-
+    doc.save(output_path, garbage=4, deflate=True)
+    doc.close()
     logger.info("Done → %s", output_path)
