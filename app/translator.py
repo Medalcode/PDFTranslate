@@ -27,8 +27,9 @@ from typing import Optional
 
 import fitz  # PyMuPDF
 
-from app.config import SOURCE_LANG, TARGET_LANG, PROTECTED_TERMS
+from app.config import SOURCE_LANG, TARGET_LANG, PROTECTED_TERMS, GLOSSARY
 from app.classifiers import classify
+from app.cache import get_cached_translation, save_to_cache
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ STRICT RULES:
 4. DO NOT translate: source code, commands, file paths, URLs, or variable names.
 5. Proper nouns, product names, and acronyms stay unchanged.
 6. If a block should not be translated, return it as-is.
-7. Output ONLY the translated blocks — no commentary.
+8. {glossary_rules}
 
 BLOCKS:
 {blocks}
@@ -67,7 +68,8 @@ TEXT:
 
 _PH_PREFIX = "PROT"
 _PROTECTED_RE = re.compile(
-    r"\b(" + "|".join(re.escape(t) for t in PROTECTED_TERMS) + r")\b"
+    r"\b(" + "|".join(re.escape(t) for t in PROTECTED_TERMS) + r")\b",
+    re.IGNORECASE
 )
 
 
@@ -188,14 +190,33 @@ class LLMQuotaExceeded(Exception):
     pass
 
 
-def _translate_with_llm(texts: list[str], llm: _LLMBase) -> list[str]:
-    """Translate a list of blocks using LLM numbered-block batching."""
-    results = list(texts)  # default: unchanged
-    consecutive_failures = 0
+def _translate_with_llm(texts: list[str], llm: _LLMBase, target_lang: str) -> list[str]:
+    """Translate blocks using LLM with internal caching and glossary support."""
+    results = [None] * len(texts)
+    to_translate_idxs = []
+    
+    # Check cache first
+    for i, t in enumerate(texts):
+        cached = get_cached_translation(t, target_lang)
+        if cached:
+            results[i] = cached
+        else:
+            to_translate_idxs.append(i)
+            
+    if not to_translate_idxs:
+        return results
 
-    for start in range(0, len(texts), _LLM_BATCH):
-        batch = texts[start : start + _LLM_BATCH]
-        # Protect terms before sending
+    # Process only uncached blocks in batches
+    consecutive_failures = 0
+    uncached_texts = [texts[i] for i in to_translate_idxs]
+    
+    # Prepare glossary string
+    g_rules = "Use the following glossary for specific terms: " + ", ".join(f"'{k}' -> '{v}'" for k, v in GLOSSARY.items()) if GLOSSARY else "No specific glossary rules."
+
+    for start in range(0, len(uncached_texts), _LLM_BATCH):
+        batch = uncached_texts[start : start + _LLM_BATCH]
+        batch_idxs = to_translate_idxs[start : start + _LLM_BATCH]
+        
         protected_batch, ph_maps = [], []
         for t in batch:
             p, ph = _protect(t)
@@ -203,29 +224,30 @@ def _translate_with_llm(texts: list[str], llm: _LLMBase) -> list[str]:
             ph_maps.append(ph)
 
         numbered = "\n\n".join(f"[{i+1}] {t}" for i, t in enumerate(protected_batch))
-        prompt = _TRANSLATION_PROMPT.format(blocks=numbered)
+        prompt = _TRANSLATION_PROMPT.format(glossary_rules=g_rules, blocks=numbered)
 
         success = False
-        for attempt in range(4):  # Reduced to 4 attempts to avoid huge hangs
+        for attempt in range(4):
             try:
                 time.sleep(_LLM_DELAY)
                 response = llm.call(prompt)
                 
-                if "429" in response or "quota" in response.lower() or "rate limit" in response.lower():
+                if any(x in response.lower() for x in ["429", "quota", "rate limit"]):
                     raise ValueError(f"Rate Limit/Quota: {response}")
                     
                 parsed = _parse_numbered_blocks(response, len(batch))
                 if parsed:
                     for j, (translated, ph_map) in enumerate(zip(parsed, ph_maps)):
-                        # Restore protected terms, use original if translation blank
                         t = _restore(translated, ph_map) if translated else batch[j]
-                        results[start + j] = t
+                        results[batch_idxs[j]] = t
+                        # Save to cache
+                        save_to_cache(batch[j], t, target_lang)
                     success = True
                     consecutive_failures = 0
                     break
                 logger.warning("LLM block parse failed (attempt %d), retrying…", attempt + 1)
             except Exception as exc:
-                wait = 5 + (2 ** attempt)  # Start at 6s wait, scale slowly
+                wait = 5 + (2 ** attempt)
                 logger.warning("LLM call error attempt %d: %s. Wait %ds…", attempt + 1, exc, wait)
                 time.sleep(wait)
 
@@ -233,8 +255,10 @@ def _translate_with_llm(texts: list[str], llm: _LLMBase) -> list[str]:
             logger.error("LLM batch %d failed after all retries.", start)
             consecutive_failures += 1
             if consecutive_failures >= 3:
-                logger.error("Too many consecutive LLM failures. Aborting LLM translation.")
                 raise LLMQuotaExceeded("Consecutive LLM failures exceeded limit")
+            # Fill with originals if failed
+            for j in range(len(batch)):
+                results[batch_idxs[j]] = batch[j]
 
     return results
 
@@ -340,10 +364,11 @@ def _insert_autofit(
     bold:      bool,
     italic:    bool,
     color:     tuple,
+    llm:       _LLMBase = None,
 ) -> None:
-    """Insert text into rect, shrinking font until it fits."""
+    """Insert text into rect, shrinking or rewriting via LLM if it doesn't fit."""
     fname = _pdf_fontname(font_name, bold, italic)
-    fs = max(font_size, 7.0)  # don't start below 7pt
+    fs = max(font_size, 7.0)
 
     while fs >= _MIN_FONT:
         rc = page.insert_textbox(
@@ -351,13 +376,24 @@ def _insert_autofit(
             fontname=fname,
             fontsize=fs,
             color=color,
-            align=0,   # left
+            align=0,
         )
         if rc >= 0:
             return
         fs -= 0.5
 
-    # Last resort at minimum size — let PyMuPDF truncate
+    # If it still doesn't fit at 6pt and we have an LLM, try semantic shortening
+    if llm and len(text) > 20:
+        logger.info("Overflow detected for block. Requesting semantic shortening...")
+        target_len = int(len(text) * 0.7)
+        prompt = _LENGTH_ADJUST_PROMPT.format(target_len=target_len, text=text)
+        shortened = llm.call(prompt)
+        if shortened and len(shortened) < len(text):
+            # Try again with shortened text at original font size
+            _insert_autofit(page, rect, shortened, font_size, font_name, bold, italic, color, llm=None)
+            return
+
+    # Last resort: truncate
     page.insert_textbox(rect, text, fontname=fname, fontsize=_MIN_FONT, color=color)
 
 
@@ -368,7 +404,7 @@ def translate_pdf(
     output_path: str,
     source_lang: str = SOURCE_LANG,
     target_lang: str = TARGET_LANG,
-    progress_callback=None,
+    progress_callback=None,  # callback(phase: str, current: int, total: int)
 ) -> None:
     """
     Translate a PDF document using the v2 overlay pipeline.
@@ -467,7 +503,7 @@ def translate_pdf(
             })
 
         if progress_callback:
-            progress_callback(page_idx + 1, total_pages)
+            progress_callback("extract", page_idx + 1, total_pages)
 
     # ── Pass 2: Translate all translatable blocks ─────────────────────────────
     translatable_idx = [
@@ -482,7 +518,10 @@ def translate_pdf(
     if texts_to_translate:
         if llm:
             try:
-                translated = _translate_with_llm(texts_to_translate, llm)
+                # Mock progress for LLM batching (Pass 2)
+                if progress_callback: progress_callback("translate", 10, 100)
+                translated = _translate_with_llm(texts_to_translate, llm, target_lang)
+                if progress_callback: progress_callback("translate", 100, 100)
             except LLMQuotaExceeded as exc:
                 logger.error("LLM aborted (%s). Switching to Google Translate fallback...", exc)
                 translated = _translate_with_google(texts_to_translate, source_lang, target_lang)
@@ -523,7 +562,11 @@ def translate_pdf(
                 bold      = b["bold"],
                 italic    = b["italic"],
                 color     = b["color"],
+                llm       = llm if b["type"] in ("body", "title") else None
             )
+        
+        if progress_callback:
+            progress_callback("overlay", page_idx + 1, total_pages)
 
     doc.save(output_path, garbage=4, deflate=True)
     doc.close()

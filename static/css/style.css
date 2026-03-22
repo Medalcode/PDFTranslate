@@ -83,6 +83,7 @@ body {
   font-size: 1.3rem;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 .logo-text strong { font-weight: 700; }
@@ -136,6 +137,7 @@ body {
 .gradient-text {
   background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 60%, #ec4899 100%);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 .hero-subtitle {
@@ -152,8 +154,13 @@ body {
   border: 1px solid var(--border);
   border-radius: 24px;
   padding: 36px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow), 0 0 40px rgba(59,130,246,0.05);
   backdrop-filter: blur(12px);
+  transition: transform 0.5s ease, box-shadow 0.5s ease;
+}
+.card:hover {
+  box-shadow: var(--shadow), 0 0 60px rgba(59,130,246,0.1);
+  transform: translateY(-2px);
 }
 
 /* ── Language row ────────────────── */
@@ -321,8 +328,8 @@ body {
   width: 0%;
   background: linear-gradient(90deg, var(--accent), var(--accent-2));
   border-radius: 100px;
-  transition: width 0.6s ease;
-  box-shadow: 0 0 10px var(--accent-glow);
+  transition: width 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 0 15px var(--accent-glow);
 }
 
 .status-steps {

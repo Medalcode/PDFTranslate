@@ -10,15 +10,19 @@
 
 ## 2. Super-Skill: `translate_document`
 **Descripción**: Centraliza el pipeline de traducción (layout + texto).
+**Capacidades Avanzadas**:
+- **Deduplicación Automática**: Consulta `data/translations_cache.db` para omitir bloques ya procesados (ahorro de costo/tiempo).
+- **Glosario Forzado**: Respeta términos definidos en `data/glossary.json` para consistencia corporativa.
+- **Ajuste Semántico**: Si el texto español desborda el recuadro original, el sistema resume el contenido vía LLM para mantener el layout (Semantic Fit).
 **Parámetros**:
 - `filepath` (str): Ruta al PDF.
 - `target_lang` (str): Código de país (ISO-639-1).
 - `preserve_layout` (bool): Mantener coordenadas originales (default: `True`).
-- `dry_run` (bool): Realiza una prueba de conexión y traducción de un bloque simple (reemplaza `test_llm.py` y `test_keys.py`).
-- `sample_only` (bool): Traduce solo las primeras N páginas para validación (reemplaza `translate_sample.py`).
+- `dry_run` (bool): Prueba de conexión y traducción simple.
+- `sample_only` (bool): Traduce solo las primeras N páginas.
 
 ## 3. Super-Skill: `generate_test_asset`
-**Descripción**: Consolida la creación de archivos de prueba dinámicos (PDFs dummy) en una única macro-skill parametrizada.
+**Descripción**: Creación de archivos de prueba dinámicos (PDFs dummy) para QA.
 **Parámetros**:
 - `output_path` (str): Destino del archivo.
-- `scenario` (str): Tipología de asset (ej: 'complex_layout', 'simple_text').
+- `scenario` (str): Tipología de asset ('complex_layout', 'simple_text', 'overflow_test').

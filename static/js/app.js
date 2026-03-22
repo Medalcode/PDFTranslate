@@ -171,51 +171,72 @@
     setProgress(30, "Translating pages…");
     activateStep("step-translate");
 
-    // ── Poll status ──────────────────────────────────────────────────────
-    let fakePct = 30;
-    pollInterval = setInterval(async () => {
-      try {
-        const res = await fetch(`/status/${jobId}`);
-        if (!res.ok) throw new Error("Status check failed.");
-        const data = await res.json();
+    // ── WebSocket status ──────────────────────────────────────────────────────
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${protocol}//${window.location.host}/ws/${jobId}`);
 
-        if (data.status === "done") {
-          clearInterval(pollInterval);
-          pollInterval = null;
-          setProgress(100, "Complete!");
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === "progress") {
+        let pct = 0;
+        let label = "";
+
+        if (data.phase === "extract") {
+          pct = Math.round((data.current / data.total) * 33);
+          label = `Extracting content: page ${data.current} of ${data.total}`;
+          activateStep("step-upload"); 
+        } else if (data.phase === "translate") {
+          pct = 33 + Math.round((data.current / data.total) * 33);
+          label = "AI Brain: Translating blocks (Pass 2/3)";
+          activateStep("step-translate");
+        } else if (data.phase === "overlay") {
+          pct = 66 + Math.round((data.current / data.total) * 34);
+          label = `Visual Layout Restoration: Page ${data.current}`;
+          activateStep("step-translate");
+        } else if (data.phase === "done") {
+          setProgress(100, "Translation Complete!");
+          socket.close();
+          
+          // Victory Confetti!
+          confetti({
+            particleCount: 150,
+            spread: 70,
+            origin: { y: 0.6 },
+            colors: ['#3b82f6', '#8b5cf6', '#10b981']
+          });
+
           stepTranslate.classList.remove("active");
           stepTranslate.classList.add("done");
           stepDone.classList.add("active");
           stepDone.classList.add("done");
 
-          // Show download
           setTimeout(() => {
             progressSec.style.display = "none";
             downloadSec.style.display = "flex";
             btnDownload.href = `/download/${jobId}`;
-          }, 600);
-
-        } else if (data.status === "error") {
-          clearInterval(pollInterval);
-          pollInterval = null;
-          const errDetail = data.error || "Translation failed. Please try again.";
-          showError(errDetail);
+          }, 800);
+          return;
+        } else if (data.phase === "error") {
+          socket.close();
+          showError("Translation failed. Check the PDF format or LLM quota.");
           progressSec.style.display = "none";
           btnTranslate.style.display = "flex";
           btnTranslate.disabled = false;
-
-        } else {
-          // Still processing — increment progress bar slowly
-          if (fakePct < 90) {
-            fakePct = Math.min(fakePct + 2, 90);
-            setProgress(fakePct, "Translating pages…");
-          }
+          return;
         }
-      } catch (err) {
-        // Don't break on transient network errors during polling
-        console.warn("Polling error:", err);
+        setProgress(pct, label);
       }
-    }, 2000);
+    };
+
+    socket.onerror = (err) => {
+      console.error("WS Error:", err);
+      // Fallback: poll status once (or simple error notification)
+      showError("Connection lost. Please refresh or check the PDF status.");
+    };
+
+    socket.onclose = () => {
+      console.log("WS connection closed.");
+    };
   });
 
   // ── Reset ─────────────────────────────────────────────────────────────────

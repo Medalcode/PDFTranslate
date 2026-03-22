@@ -4,22 +4,25 @@
 
 ## Features
 
-- 📄 Translate PDFs from English → Spanish (configurable)
-- 🖼️ Preserves images and diagrams using semantic extraction
+- 📄 English → Spanish Translation (configurable)
+- 🖼️ Preserves images, font size, and layout using exact bounding boxes
 - 💻 Code-aware: source code blocks are never translated
-- 📐 HTML Reconstruction: prevents text overlapping by regenerating a clean document flow
-- 🌐 Modern dark-mode web UI with drag-and-drop upload
-- ⚡ Async processing with real-time progress polling
+- ⚡ **Real-time Progress**: Powered by WebSockets (Phase 1: Extract, Phase 2: Translate, Phase 3: Overlay)
+- 💾 **Deduplication Cache**: Persistent SQLite storage to avoid re-translating identical blocks (saves $$$ and time)
+- 📖 **Dynamic Glossary**: Force specific translations via `data/glossary.json`
+- 📏 **Semantic Autofit**: AI-powered text shortening if the translation doesn't fit the original layout
+- 🌐 Modern dark-mode web UI with drag-and-drop & confetti success effects
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
 | Backend | Python · FastAPI · Uvicorn |
+| Real-time | WebSockets (Bi-directional progress) |
+| Cache | SQLite3 (Persistent deduplication) |
 | PDF Read & Overlay | PyMuPDF (fitz) - v2 Architecture |
-| Primary Translation | LLMs via OpenAI / Google Generative AI SDK |
-| Translator Fallback | Google Translate (deep-translator) with Circuit Breaker |
-| Frontend | Vanilla HTML · CSS · JavaScript |
+| Primary Translation | LLMs (OpenAI / Gemini / Anthropic / Groq) |
+| UI | Vanilla HTML · CSS · JS · Canvas-Confetti |
 
 ## Quick Start
 
@@ -100,15 +103,17 @@ Any language code supported by Google Translate/LLM works (e.g. `fr`, `de`, `pt`
 
 ## How It Works (v2 Architecture)
 
-1. User uploads a PDF via the web UI.
-2. FastAPI starts a background translation task.
-3. **Pass 1: Extraction**. **PyMuPDF** reads each page, extracting text blocks, fonts, and exact bounding boxes.
-    - Text is classified: `code` (never translated), `title`, or `body`.
-4. **Pass 2: Translation**.
-    - The text is grouped into batches and sent to the configured **LLM (OpenAI/Gemini/Groq)**.
-    - **Circuit Breaker:** If the LLM hits persistent rate limits or quotas (e.g., HTTP 429), a circuit breaker triggers. The system instantly aborts the LLM and falls back to **Google Translate** to finish the document. This prevents the pipeline from hanging for hours.
-5. **Pass 3: Overlay**. The translated text is carefully re-inserted onto the exact *original* coordinates on the document, automatically downscaling the font if the translation is longer than the original text. The original text underneath is redacted.
-6. The exact output PDF is saved and made available for download, with 0% layout deformation.
+1. **Upload**: User drops a PDF. FastAPI spawns a background task and establishes a **WebSocket** connection for real-time reporting.
+2. **Phase 1: Extraction**: PyMuPDF extracts text, fonts, and bounding boxes.
+3. **Phase 2: Intelligent Translation**: 
+    - **Cache Lookup**: Skips blocks already translated in previous jobs.
+    - **Glossary Injection**: Ensures business terms are translated as defined.
+    - **LLM Batching**: Translates remaining blocks via chosen provider.
+    - **Circuit Breaker**: Auto-switch to Google Translate if LLM fails/quota hits.
+4. **Phase 3: Visual Overlay & Semantic Fit**:
+    - If a translated paragraph is too long, the system **shrink-fits** the font down to 6pt.
+    - If it *still* overflows, the **LLM semantically shortens** the text while keeping original meaning.
+5. **Success**: The final PDF is saved in `data/outputs/` and the UI triggers a confetti celebration.
 
 ## License
 

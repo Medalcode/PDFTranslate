@@ -9,9 +9,10 @@ import uuid
 from enum import Enum
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+import asyncio
 
 from app.config import OUTPUT_DIR, SOURCE_LANG, TARGET_LANG, UPLOAD_DIR
 from app.translator import translate_pdf
@@ -39,22 +40,69 @@ class JobStatus(str, Enum):
 jobs: dict[str, dict] = {}  # job_id -> {status, output_path, error}
 
 
+# ── Connection Manager for WebSockets ─────────────────────────────────────────
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: dict[str, list[WebSocket]] = {}
+
+    async def connect(self, websocket: WebSocket, job_id: str):
+        await websocket.accept()
+        if job_id not in self.active_connections:
+            self.active_connections[job_id] = []
+        self.active_connections[job_id].append(websocket)
+
+    def disconnect(self, websocket: WebSocket, job_id: str):
+        if job_id in self.active_connections:
+            self.active_connections[job_id].remove(websocket)
+
+    async def broadcast_progress(self, job_id: str, phase: str, current: int, total: int):
+        if job_id in self.active_connections:
+            message = {"type": "progress", "phase": phase, "current": current, "total": total}
+            for connection in self.active_connections[job_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    pass
+
+manager = ConnectionManager()
+
+
 # ── Background worker ─────────────────────────────────────────────────────────
 def _run_translation(job_id: str, input_path: str, output_path: str, source: str, target: str):
     logger.info("Job %s started (src=%s → tgt=%s)", job_id, source, target)
+    
+    # Progress callback that broadcasts to WebSocket
+    def progress_cb(phase, current, total):
+        # We need to bridge thread -> asyncio event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(manager.broadcast_progress(job_id, phase, current, total))
+        loop.close()
+
     try:
         translate_pdf(
             input_path=input_path,
             output_path=output_path,
             source_lang=source,
             target_lang=target,
+            progress_callback=progress_cb
         )
         jobs[job_id]["status"] = JobStatus.DONE
         logger.info("Job %s completed → %s", job_id, output_path)
+        # Notify completion
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(manager.broadcast_progress(job_id, "done", 100, 100))
+        loop.close()
     except Exception as exc:
         logger.exception("Job %s failed: %s", job_id, exc)
         jobs[job_id]["status"] = JobStatus.ERROR
         jobs[job_id]["error"] = str(exc)
+        # Notify error
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(manager.broadcast_progress(job_id, "error", 0, 0))
+        loop.close()
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -129,3 +177,14 @@ async def download(job_id: str):
     original = Path(job.get("filename", "document.pdf")).stem
     download_name = f"{original}_translated.pdf"
     return FileResponse(output_path, media_type="application/pdf", filename=download_name)
+
+
+@app.websocket("/ws/{job_id}")
+async def websocket_endpoint(websocket: WebSocket, job_id: str):
+    await manager.connect(websocket, job_id)
+    try:
+        while True:
+            # Keep connection alive
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, job_id)
