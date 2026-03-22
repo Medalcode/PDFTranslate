@@ -41,7 +41,24 @@ if _env_terms:
 else:
     PROTECTED_TERMS = set(_default_terms)
 
+# ── Glossary (Dynamic Force Translation) ──────────────────────────────────────
+# Loads from data/glossary.json if exists
+GLOSSARY: dict[str, str] = {}
+GLOSSARY_PATH = "data/glossary.json"
 
+if os.path.exists(GLOSSARY_PATH):
+    try:
+        with open(GLOSSARY_PATH, "r", encoding="utf-8") as f:
+            GLOSSARY = json.load(f)
+            # Add glossary keys to protected terms to ensure they aren't mangled by NLP
+            PROTECTED_TERMS.update(GLOSSARY.keys())
+    except Exception as e:
+        print(f"Warning: Failed to load glossary: {e}")
+
+# ── Initialization ────────────────────────────────────────────────────────────
 # Ensure runtime directories exist
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+from app.cache import init_cache
+init_cache()
