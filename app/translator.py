@@ -27,8 +27,8 @@ from typing import Optional
 
 import fitz  # PyMuPDF
 
-from app.config import SOURCE_LANG, TARGET_LANG
-from app.text_classifier import classify
+from app.config import SOURCE_LANG, TARGET_LANG, PROTECTED_TERMS
+from app.classifiers import classify
 
 logger = logging.getLogger(__name__)
 
@@ -65,30 +65,9 @@ TEXT:
 
 # ── Protected technical terms ─────────────────────────────────────────────────
 
-_PROTECTED_TERMS = {
-    # Apache ecosystem
-    "Hadoop", "HDFS", "YARN", "MapReduce", "Spark", "Hive", "Pig",
-    "Flume", "Sqoop", "HBase", "ZooKeeper", "Avro", "Parquet",
-    "Oozie", "Tez", "Kafka", "Storm", "Flink", "Cassandra", "MongoDB",
-    "Thrift", "Crunch", "Nutch",
-    # Cloud / infra
-    "AWS", "S3", "EC2", "GCS", "Azure", "Docker", "Kubernetes",
-    # Languages / tools
-    "Java", "Python", "Scala", "Ruby", "Maven", "Gradle", "Git",
-    "MRUnit", "Kerberos", "WebHDFS", "HttpFS",
-    # Formats / protocols
-    "JSON", "XML", "CSV", "HTTP", "REST", "JDBC", "ODBC", "SQL",
-    "ISBN", "API", "IDE", "GFS", "DAG", "UDF", "UDAF", "IDL",
-    # Social / branding
-    "Twitter", "Facebook", "YouTube", "LinkedIn", "GitHub", "Safari",
-    "O'Reilly", "Cloudera", "Apache", "Peachpit", "Syngress",
-    # Misc
-    "US", "UK", "CAN",
-}
-
 _PH_PREFIX = "PROT"
 _PROTECTED_RE = re.compile(
-    r"\b(" + "|".join(re.escape(t) for t in _PROTECTED_TERMS) + r")\b"
+    r"\b(" + "|".join(re.escape(t) for t in PROTECTED_TERMS) + r")\b"
 )
 
 
@@ -463,9 +442,11 @@ def translate_pdf(
 
             rect = fitz.Rect(block["bbox"])
 
-            # Filter out running headers and footers
-            is_header = rect.y0 < 55 and max_size < 10.0
-            is_footer = rect.y0 > 750 or (rect.y0 > 600 and max_size < 10.0)
+            # Filter out running headers and footers (dynamic scaling instead of hardcoded)
+            page_height = page.rect.height
+            is_header = rect.y0 < (page_height * 0.08) and max_size <= 11.0
+            is_footer = rect.y0 > (page_height * 0.90) or (rect.y0 > (page_height * 0.80) and max_size <= 10.0)
+            
             if is_header or is_footer:
                 logger.debug("Skipping header/footer on page %d: %r", page_idx, text[:60])
                 continue
