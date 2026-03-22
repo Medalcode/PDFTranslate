@@ -1,4 +1,0 @@
-TRANSLATION:
-[1] Prueba
-
-[2] Segunda prueba

@@ -61,17 +61,20 @@ Then open [http://localhost:8000](http://localhost:8000) in your browser.
 PDFTranslate/
 ├── app/
 │   ├── main.py            # FastAPI routes
-│   ├── config.py          # Settings & directories
+│   ├── config.py          # Settings & directories (data/ uploads/outputs)
 │   ├── translator.py      # Core PDF translation engine
-│   └── text_classifier.py # Code / title / text detection
-├── static/
-│   ├── index.html         # Web UI
+│   └── classifiers.py     # Code / title / text detection logic
+├── data/                  # Dynamic data (ignored in git)
+│   ├── uploads/           # Temporary input PDFs
+│   └── outputs/           # Translated PDF outputs
+├── static/                # Web Frontend
+│   ├── index.html         # User Interface
 │   ├── css/style.css      # Premium dark-mode styles
-│   └── js/app.js          # Upload / polling / download logic
-├── uploads/               # Temporary input PDFs
-├── outputs/               # Translated PDF outputs
-├── agents.md              # Documentación y roles de IA
-├── skills.md              # Documentación de Super-Skills de IA
+│   └── js/app.js          # Async logic
+├── tests/                 # Automated QA tests
+│   └── test_basic.py      # Basic sanity checks
+├── agents.md              # IA: Roles y Agentes consolidados
+├── skills.md              # IA: Super-Skills de procesamiento
 ├── .env.example
 ├── requirements.txt
 └── README.md

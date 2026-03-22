@@ -24,10 +24,14 @@ _CODE_START = re.compile(
 _CODE_SYMBOLS = [
     "{", "}", "=>", "->", "==", "!=", ">=", "<=",
     "++", "--", "&&", "||", "::", "/*", "*/",
+    "def ", "class ", "return ", "import ", "const ", "let "
 ]
 
 # Patterns that look like indexing / TOC / page refs (dots + page number)
 _TOC_LINE = re.compile(r"\.{3,}")  # three or more consecutive dots
+
+# Match Roman numerals or simple digits often used for pagination
+_PAGINATION = re.compile(r"^(?:[ivxlcdm]+|\d+)\s*$", re.IGNORECASE)
 
 
 def is_code(text: str) -> bool:
@@ -36,8 +40,8 @@ def is_code(text: str) -> bool:
     if not stripped:
         return False
 
-    # Table-of-contents dot leaders: never code
-    if _TOC_LINE.search(stripped):
+    # Table-of-contents dot leaders and pagination: never code
+    if _TOC_LINE.search(stripped) or _PAGINATION.match(stripped):
         return False
 
     # Strong keyword match at line start
@@ -71,8 +75,8 @@ def is_title(text: str) -> bool:
     if not stripped:
         return False
 
-    # TOC lines are not real titles — treat as body text
-    if _TOC_LINE.search(stripped):
+    # TOC lines and pagination are not real titles — treat as skip/body
+    if _TOC_LINE.search(stripped) or _PAGINATION.match(stripped):
         return False
 
     words = stripped.split()
@@ -86,8 +90,15 @@ def is_title(text: str) -> bool:
     return False
 
 
+def is_skip(text: str) -> bool:
+    """Return True if the block is just pagination or TOC leaders that shouldn't be translated."""
+    stripped = text.strip()
+    return bool(_TOC_LINE.search(stripped) or _PAGINATION.match(stripped))
+
 def classify(text: str) -> str:
-    """Classify a PDF text block as 'code', 'title', or 'body'."""
+    """Classify a PDF text block as 'code', 'title', 'skip', or 'body'."""
+    if is_skip(text):
+        return "skip"
     if is_code(text):
         return "code"
     if is_title(text):
