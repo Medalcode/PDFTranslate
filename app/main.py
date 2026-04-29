@@ -10,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import OUTPUT_DIR, SOURCE_LANG, TARGET_LANG, UPLOAD_DIR
@@ -41,7 +41,7 @@ class JobStatus(str, Enum):
 # ── Background worker ─────────────────────────────────────────────────────────
 def _run_translation(job_id: str, input_path: str, output_path: str, source: str, target: str):
     logger.info("Job %s started (src=%s → tgt=%s)", job_id, source, target)
-    
+
     # Progress callback persists state so any worker can report status.
     def progress_cb(phase, current, total):
         update_job(
@@ -58,7 +58,7 @@ def _run_translation(job_id: str, input_path: str, output_path: str, source: str
             output_path=output_path,
             source_lang=source,
             target_lang=target,
-            progress_callback=progress_cb
+            progress_callback=progress_cb,
         )
         update_job(
             job_id,
@@ -82,6 +82,7 @@ def _run_translation(job_id: str, input_path: str, output_path: str, source: str
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index():

@@ -14,7 +14,6 @@ except ImportError:  # pragma: no cover - non-Linux fallback
 
 from app.paths import project_path
 
-
 JOBS_DB: Path = project_path("data", "jobs.json")
 LOCK_FILE: Path = JOBS_DB.with_suffix(".lock")
 _THREAD_LOCK = threading.Lock()

@@ -6,13 +6,16 @@ from app.main import app
 
 client = TestClient(app)
 
+
 def test_read_main():
     response = client.get("/")
     assert response.status_code == 200
     assert "PDFTranslate" in response.text
 
+
 def test_config():
-    from app.config import UPLOAD_DIR, OUTPUT_DIR
+    from app.config import OUTPUT_DIR, UPLOAD_DIR
+
     assert Path(UPLOAD_DIR).is_absolute()
     assert Path(OUTPUT_DIR).is_absolute()
 

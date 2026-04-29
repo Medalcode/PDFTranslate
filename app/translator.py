@@ -23,13 +23,12 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Optional
 
 import fitz  # PyMuPDF
 
-from app.config import SOURCE_LANG, TARGET_LANG, PROTECTED_TERMS, GLOSSARY
-from app.classifiers import classify
 from app.cache import get_cached_translation, save_to_cache
+from app.classifiers import classify
+from app.config import GLOSSARY, PROTECTED_TERMS, SOURCE_LANG, TARGET_LANG
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +67,7 @@ TEXT:
 
 _PH_PREFIX = "PROT"
 _PROTECTED_RE = re.compile(
-    r"\b(" + "|".join(re.escape(t) for t in PROTECTED_TERMS) + r")\b",
-    re.IGNORECASE
+    r"\b(" + "|".join(re.escape(t) for t in PROTECTED_TERMS) + r")\b", re.IGNORECASE
 )
 
 
@@ -95,7 +93,7 @@ def _restore(text: str, ph_map: dict[str, str]) -> str:
 
 # ── Text cleaning ─────────────────────────────────────────────────────────────
 
-_SOFT_HYPHEN  = re.compile(r"\xad")
+_SOFT_HYPHEN = re.compile(r"\xad")
 _HYPHEN_BREAK = re.compile(r"-(\n)\s*")
 _BULLET_GLYPH = re.compile(r"[\u25a0\u25cf\u2022\u2023]")
 
@@ -109,6 +107,7 @@ def _clean_text(text: str) -> str:
 
 # ── LLM backends ──────────────────────────────────────────────────────────────
 
+
 class _LLMBase:
     def call(self, prompt: str) -> str:
         raise NotImplementedError
@@ -117,6 +116,7 @@ class _LLMBase:
 class _GeminiBackend(_LLMBase):
     def __init__(self, api_key: str, model: str):
         import google.generativeai as genai
+
         genai.configure(api_key=api_key)
         self._model = genai.GenerativeModel(model or "gemini-2.0-flash")
 
@@ -132,6 +132,7 @@ class _GeminiBackend(_LLMBase):
 class _OpenAIBackend(_LLMBase):
     def __init__(self, api_key: str, model: str, base_url: str):
         from openai import OpenAI
+
         kwargs: dict = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
@@ -151,7 +152,7 @@ class _OpenAIBackend(_LLMBase):
             return f"Error: {exc}"
 
 
-def _build_llm(provider: str, api_key: str, model: str, base_url: str) -> Optional[_LLMBase]:
+def _build_llm(provider: str, api_key: str, model: str, base_url: str) -> _LLMBase | None:
     if not api_key:
         return None
     try:
@@ -168,11 +169,11 @@ def _build_llm(provider: str, api_key: str, model: str, base_url: str) -> Option
 
 # ── LLM translation ───────────────────────────────────────────────────────────
 
-_LLM_BATCH = 20          # blocks per LLM call
-_LLM_DELAY = 0.5         # courtesy delay between calls
+_LLM_BATCH = 20  # blocks per LLM call
+_LLM_DELAY = 0.5  # courtesy delay between calls
 
 
-def _parse_numbered_blocks(response: str, expected: int) -> Optional[list[str]]:
+def _parse_numbered_blocks(response: str, expected: int) -> list[str] | None:
     """Parse [N] block format from LLM response."""
     pattern = re.compile(r"\[(\d+)\]\s*(.*?)(?=\[\d+\]|\Z)", re.DOTALL)
     matches = pattern.findall(response)
@@ -190,11 +191,13 @@ class LLMQuotaExceeded(Exception):
     pass
 
 
-def _translate_with_llm(texts: list[str], llm: _LLMBase, source_lang: str, target_lang: str) -> list[str]:
+def _translate_with_llm(
+    texts: list[str], llm: _LLMBase, source_lang: str, target_lang: str
+) -> list[str]:
     """Translate blocks using LLM with internal caching and glossary support."""
     results = [None] * len(texts)
     to_translate_idxs = []
-    
+
     # Check cache first
     for i, t in enumerate(texts):
         cached = get_cached_translation(t, target_lang)
@@ -202,28 +205,33 @@ def _translate_with_llm(texts: list[str], llm: _LLMBase, source_lang: str, targe
             results[i] = cached
         else:
             to_translate_idxs.append(i)
-            
+
     if not to_translate_idxs:
         return results
 
     # Process only uncached blocks in batches
     consecutive_failures = 0
     uncached_texts = [texts[i] for i in to_translate_idxs]
-    
+
     # Prepare glossary string
-    g_rules = "Use the following glossary for specific terms: " + ", ".join(f"'{k}' -> '{v}'" for k, v in GLOSSARY.items()) if GLOSSARY else "No specific glossary rules."
+    g_rules = (
+        "Use the following glossary for specific terms: "
+        + ", ".join(f"'{k}' -> '{v}'" for k, v in GLOSSARY.items())
+        if GLOSSARY
+        else "No specific glossary rules."
+    )
 
     for start in range(0, len(uncached_texts), _LLM_BATCH):
         batch = uncached_texts[start : start + _LLM_BATCH]
         batch_idxs = to_translate_idxs[start : start + _LLM_BATCH]
-        
+
         protected_batch, ph_maps = [], []
         for t in batch:
             p, ph = _protect(t)
             protected_batch.append(p)
             ph_maps.append(ph)
 
-        numbered = "\n\n".join(f"[{i+1}] {t}" for i, t in enumerate(protected_batch))
+        numbered = "\n\n".join(f"[{i + 1}] {t}" for i, t in enumerate(protected_batch))
         prompt = _TRANSLATION_PROMPT.format(
             source_lang=source_lang,
             target_lang=target_lang,
@@ -236,10 +244,10 @@ def _translate_with_llm(texts: list[str], llm: _LLMBase, source_lang: str, targe
             try:
                 time.sleep(_LLM_DELAY)
                 response = llm.call(prompt)
-                
+
                 if any(x in response.lower() for x in ["429", "quota", "rate limit"]):
                     raise ValueError(f"Rate Limit/Quota: {response}")
-                    
+
                 parsed = _parse_numbered_blocks(response, len(batch))
                 if parsed:
                     for j, (translated, ph_map) in enumerate(zip(parsed, ph_maps)):
@@ -252,7 +260,7 @@ def _translate_with_llm(texts: list[str], llm: _LLMBase, source_lang: str, targe
                     break
                 logger.warning("LLM block parse failed (attempt %d), retrying…", attempt + 1)
             except Exception as exc:
-                wait = 5 + (2 ** attempt)
+                wait = 5 + (2**attempt)
                 logger.warning("LLM call error attempt %d: %s. Wait %ds…", attempt + 1, exc, wait)
                 time.sleep(wait)
 
@@ -270,13 +278,14 @@ def _translate_with_llm(texts: list[str], llm: _LLMBase, source_lang: str, targe
 
 # ── Google Translate fallback ─────────────────────────────────────────────────
 
-_GT_DELAY    = 1.2
+_GT_DELAY = 1.2
 _GT_BATCH_SEP = " 🔹 "
 _GT_BATCH_MAX = 3000
 
 
 def _translate_with_google(texts: list[str], source: str, target: str) -> list[str]:
     from deep_translator import GoogleTranslator
+
     translator = GoogleTranslator(source=source, target=target)
     final: dict[int, str] = {}
 
@@ -286,7 +295,7 @@ def _translate_with_google(texts: list[str], source: str, target: str) -> list[s
                 time.sleep(_GT_DELAY)
                 return translator.translate(t) or t
             except Exception as exc:
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
                 logger.warning("GT retry %d: %s", attempt + 1, exc)
         return t
 
@@ -309,7 +318,7 @@ def _translate_with_google(texts: list[str], source: str, target: str) -> list[s
             final[idx] = _restore(_call(p_t), ph)
 
     batch: list[str] = []
-    idxs:  list[int] = []
+    idxs: list[int] = []
     batch_len = 0
 
     for i, text in enumerate(texts):
@@ -332,26 +341,36 @@ def _translate_with_google(texts: list[str], source: str, target: str) -> list[s
 
 # ── PDF font mapping ──────────────────────────────────────────────────────────
 
+
 def _pdf_fontname(font_name: str, bold: bool, italic: bool) -> str:
     """Map a PDF font name to a PyMuPDF base-14 font identifier."""
     fn = font_name.lower()
-    is_mono  = "mono" in fn or "courier" in fn or "consolas" in fn or "code" in fn
+    is_mono = "mono" in fn or "courier" in fn or "consolas" in fn or "code" in fn
     is_times = "times" in fn or "serif" in fn
 
     if is_mono:
-        if bold and italic: return "cobi"
-        if bold:            return "cobo"
-        if italic:          return "coit"
+        if bold and italic:
+            return "cobi"
+        if bold:
+            return "cobo"
+        if italic:
+            return "coit"
         return "cour"
     if is_times:
-        if bold and italic: return "tibi"
-        if bold:            return "tibo"
-        if italic:          return "tiit"
+        if bold and italic:
+            return "tibi"
+        if bold:
+            return "tibo"
+        if italic:
+            return "tiit"
         return "tiro"
     # Default: Helvetica
-    if bold and italic: return "hebi"
-    if bold:            return "hebo"
-    if italic:          return "heit"
+    if bold and italic:
+        return "hebi"
+    if bold:
+        return "hebo"
+    if italic:
+        return "heit"
     return "helv"
 
 
@@ -361,15 +380,15 @@ _MIN_FONT = 6.0
 
 
 def _insert_autofit(
-    page:      fitz.Page,
-    rect:      fitz.Rect,
-    text:      str,
+    page: fitz.Page,
+    rect: fitz.Rect,
+    text: str,
     font_size: float,
     font_name: str,
-    bold:      bool,
-    italic:    bool,
-    color:     tuple,
-    llm:       _LLMBase = None,
+    bold: bool,
+    italic: bool,
+    color: tuple,
+    llm: _LLMBase = None,
 ) -> None:
     """Insert text into rect, shrinking or rewriting via LLM if it doesn't fit."""
     fname = _pdf_fontname(font_name, bold, italic)
@@ -377,7 +396,8 @@ def _insert_autofit(
 
     while fs >= _MIN_FONT:
         rc = page.insert_textbox(
-            rect, text,
+            rect,
+            text,
             fontname=fname,
             fontsize=fs,
             color=color,
@@ -395,7 +415,9 @@ def _insert_autofit(
         shortened = llm.call(prompt)
         if shortened and len(shortened) < len(text):
             # Try again with shortened text at original font size
-            _insert_autofit(page, rect, shortened, font_size, font_name, bold, italic, color, llm=None)
+            _insert_autofit(
+                page, rect, shortened, font_size, font_name, bold, italic, color, llm=None
+            )
             return
 
     # Last resort: truncate
@@ -403,6 +425,7 @@ def _insert_autofit(
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
+
 
 def translate_pdf(
     input_path: str,
@@ -419,7 +442,7 @@ def translate_pdf(
       - Text is redacted in-place and replaced with the translation at the
         exact same bounding box — no ReportLab reconstruction needed.
     """
-    from app.config import LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL
+    from app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_PROVIDER
 
     logger.info("PDFTranslate v2 | input: %s", input_path)
 
@@ -441,17 +464,17 @@ def translate_pdf(
         raw = page.get_text("dict")
 
         for block in raw["blocks"]:
-            if block["type"] == 1:           # image block — keep as-is
+            if block["type"] == 1:  # image block — keep as-is
                 continue
 
             # Aggregate text and font metadata across all spans
             full_text = ""
-            max_size  = 0.0
+            max_size = 0.0
             font_name = ""
-            is_bold   = False
+            is_bold = False
             is_italic = False
-            is_mono   = False
-            color     = (0, 0, 0)
+            is_mono = False
+            color = (0, 0, 0)
 
             for line in block.get("lines", []):
                 for span in line.get("spans", []):
@@ -459,7 +482,7 @@ def translate_pdf(
                     sz = span.get("size", 0)
                     fn = span.get("font", "").lower()
                     if sz > max_size:
-                        max_size  = sz
+                        max_size = sz
                         font_name = fn
                     if any(k in fn for k in ("bold", "black", "semibold", "heavy")):
                         is_bold = True
@@ -472,8 +495,8 @@ def translate_pdf(
                     if isinstance(c, int):
                         color = (
                             ((c >> 16) & 0xFF) / 255,
-                            ((c >> 8)  & 0xFF) / 255,
-                            ( c        & 0xFF) / 255,
+                            ((c >> 8) & 0xFF) / 255,
+                            (c & 0xFF) / 255,
                         )
                 full_text += "\n"
 
@@ -486,8 +509,10 @@ def translate_pdf(
             # Filter out running headers and footers (dynamic scaling instead of hardcoded)
             page_height = page.rect.height
             is_header = rect.y0 < (page_height * 0.08) and max_size <= 11.0
-            is_footer = rect.y0 > (page_height * 0.90) or (rect.y0 > (page_height * 0.80) and max_size <= 10.0)
-            
+            is_footer = rect.y0 > (page_height * 0.90) or (
+                rect.y0 > (page_height * 0.80) and max_size <= 10.0
+            )
+
             if is_header or is_footer:
                 logger.debug("Skipping header/footer on page %d: %r", page_idx, text[:60])
                 continue
@@ -495,43 +520,47 @@ def translate_pdf(
             # Classify block type
             btype = "code" if is_mono else classify(text)
 
-            all_blocks.append({
-                "page":      page_idx,
-                "rect":      rect,
-                "text":      text,
-                "type":      btype,
-                "font_size": max(max_size, 7.0),
-                "font_name": font_name,
-                "bold":      is_bold,
-                "italic":    is_italic,
-                "color":     color,
-            })
+            all_blocks.append(
+                {
+                    "page": page_idx,
+                    "rect": rect,
+                    "text": text,
+                    "type": btype,
+                    "font_size": max(max_size, 7.0),
+                    "font_name": font_name,
+                    "bold": is_bold,
+                    "italic": is_italic,
+                    "color": color,
+                }
+            )
 
         if progress_callback:
             progress_callback("extract", page_idx + 1, total_pages)
 
     # ── Pass 2: Translate all translatable blocks ─────────────────────────────
-    translatable_idx = [
-        i for i, b in enumerate(all_blocks)
-        if b["type"] in ("body", "title")
-    ]
+    translatable_idx = [i for i, b in enumerate(all_blocks) if b["type"] in ("body", "title")]
     texts_to_translate = [all_blocks[i]["text"] for i in translatable_idx]
 
-    logger.info("Translating %d blocks (%d total extracted)…",
-                len(texts_to_translate), len(all_blocks))
+    logger.info(
+        "Translating %d blocks (%d total extracted)…", len(texts_to_translate), len(all_blocks)
+    )
 
     if texts_to_translate:
         if llm:
             try:
                 # Mock progress for LLM batching (Pass 2)
-                if progress_callback: progress_callback("translate", 10, 100)
+                if progress_callback:
+                    progress_callback("translate", 10, 100)
                 translated = _translate_with_llm(texts_to_translate, llm, source_lang, target_lang)
-                if progress_callback: progress_callback("translate", 100, 100)
+                if progress_callback:
+                    progress_callback("translate", 100, 100)
             except LLMQuotaExceeded as exc:
                 logger.error("LLM aborted (%s). Switching to Google Translate fallback...", exc)
                 translated = _translate_with_google(texts_to_translate, source_lang, target_lang)
             except Exception as exc:
-                logger.error("LLM unexpected error: %s. Switching to Google Translate fallback...", exc)
+                logger.error(
+                    "LLM unexpected error: %s. Switching to Google Translate fallback...", exc
+                )
                 translated = _translate_with_google(texts_to_translate, source_lang, target_lang)
         else:
             translated = _translate_with_google(texts_to_translate, source_lang, target_lang)
@@ -559,17 +588,17 @@ def translate_pdf(
         # Step 3b — Insert translated text at the same position
         for b in page_blocks:
             _insert_autofit(
-                page      = page,
-                rect      = b["rect"],
-                text      = b["translated"],
-                font_size = b["font_size"],
-                font_name = b["font_name"],
-                bold      = b["bold"],
-                italic    = b["italic"],
-                color     = b["color"],
-                llm       = llm if b["type"] in ("body", "title") else None
+                page=page,
+                rect=b["rect"],
+                text=b["translated"],
+                font_size=b["font_size"],
+                font_name=b["font_name"],
+                bold=b["bold"],
+                italic=b["italic"],
+                color=b["color"],
+                llm=llm if b["type"] in ("body", "title") else None,
             )
-        
+
         if progress_callback:
             progress_callback("overlay", page_idx + 1, total_pages)
 

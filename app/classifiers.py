@@ -2,6 +2,7 @@
 Text block classifier.
 Returns: 'code', 'title', or 'body'.
 """
+
 import re
 
 # Strict code-only patterns — must appear at line start
@@ -22,9 +23,27 @@ _CODE_START = re.compile(
 )
 
 _CODE_SYMBOLS = [
-    "{", "}", "=>", "->", "==", "!=", ">=", "<=",
-    "++", "--", "&&", "||", "::", "/*", "*/",
-    "def ", "class ", "return ", "import ", "const ", "let "
+    "{",
+    "}",
+    "=>",
+    "->",
+    "==",
+    "!=",
+    ">=",
+    "<=",
+    "++",
+    "--",
+    "&&",
+    "||",
+    "::",
+    "/*",
+    "*/",
+    "def ",
+    "class ",
+    "return ",
+    "import ",
+    "const ",
+    "let ",
 ]
 
 # Patterns that look like indexing / TOC / page refs (dots + page number)
@@ -81,7 +100,7 @@ def is_title(text: str) -> bool:
 
     words = stripped.split()
     # Short — does not end with sentence-closing punctuation
-    if len(words) <= 12 and not stripped[-1] in ".,:;?!":
+    if len(words) <= 12 and stripped[-1] not in ".,:;?!":
         # Must have mostly capitalized words or be all-caps
         cap_words = sum(1 for w in words if w and w[0].isupper())
         if cap_words / len(words) >= 0.6:
@@ -94,6 +113,7 @@ def is_skip(text: str) -> bool:
     """Return True if the block is just pagination or TOC leaders that shouldn't be translated."""
     stripped = text.strip()
     return bool(_TOC_LINE.search(stripped) or _PAGINATION.match(stripped))
+
 
 def classify(text: str) -> str:
     """Classify a PDF text block as 'code', 'title', 'skip', or 'body'."""

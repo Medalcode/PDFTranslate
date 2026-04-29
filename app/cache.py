@@ -1,11 +1,12 @@
-import sqlite3
 import hashlib
 import logging
+import sqlite3
 
 from app.paths import project_path
 
 logger = logging.getLogger(__name__)
 CACHE_DB = project_path("data", "translations_cache.db")
+
 
 def init_cache():
     """Ensure the cache database exists with the correct schema."""
@@ -24,32 +25,33 @@ def init_cache():
     except Exception as e:
         logger.error("Failed to initialize translation cache: %s", e)
 
+
 def get_cached_translation(text: str, target_lang: str) -> str | None:
     """Retrieve a translation from the cache if it exists."""
     if not text:
         return None
-    h = hashlib.sha256(f"{text}:{target_lang}".encode("utf-8")).hexdigest()
+    h = hashlib.sha256(f"{text}:{target_lang}".encode()).hexdigest()
     try:
         with sqlite3.connect(str(CACHE_DB)) as conn:
             res = conn.execute(
-                "SELECT translated_text FROM translations WHERE hash = ?", 
-                (h,)
+                "SELECT translated_text FROM translations WHERE hash = ?", (h,)
             ).fetchone()
             return res[0] if res else None
     except Exception as e:
         logger.warning("Cache fetch error: %s", e)
         return None
 
+
 def save_to_cache(text: str, translated_text: str, target_lang: str):
     """Save a successful translation to the cache."""
     if not text or not translated_text:
         return
-    h = hashlib.sha256(f"{text}:{target_lang}".encode("utf-8")).hexdigest()
+    h = hashlib.sha256(f"{text}:{target_lang}".encode()).hexdigest()
     try:
         with sqlite3.connect(str(CACHE_DB)) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO translations (hash, source_text, translated_text, target_lang) VALUES (?, ?, ?, ?)",
-                (h, text, translated_text, target_lang)
+                (h, text, translated_text, target_lang),
             )
             conn.commit()
     except Exception as e:
