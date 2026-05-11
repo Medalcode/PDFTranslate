@@ -91,6 +91,9 @@ If your repository requires a specific remote or branch, specify it with `git pu
 
 ```text
 PDFTranslate/
+├── .github/
+│   └── agents/
+│       └── pdf-translate.agent.md  # Custom agent for PDFTranslate workflows
 ├── app/
 │   ├── main.py            # FastAPI routes
 │   ├── config.py          # Settings & directories (data/ uploads/outputs)
@@ -113,6 +116,10 @@ PDFTranslate/
 ├── requirements.txt
 └── README.md
 ```
+
+## Custom Agent
+
+The repository includes a dedicated custom agent at [.github/agents/pdf-translate.agent.md](.github/agents/pdf-translate.agent.md) for PDF analysis, layout-preserving translation, glossary checks, and related QA/debugging tasks.
 
 ## Configuration
 
