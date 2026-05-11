@@ -4,22 +4,27 @@
 
 ## Features
 
-- 📄 Translate PDFs from English → Spanish (configurable)
-- 🖼️ Preserves images and diagrams using semantic extraction
+- 📄 English → Spanish Translation (configurable)
+- 🖼️ Preserves images, font size, and layout using exact bounding boxes
 - 💻 Code-aware: source code blocks are never translated
-- 📐 HTML Reconstruction: prevents text overlapping by regenerating a clean document flow
-- 🌐 Modern dark-mode web UI with drag-and-drop upload
-- ⚡ Async processing with real-time progress polling
+- ⚡ **Real-time Progress**: Persistent status polling (`/status/{job_id}`) across extraction, translation, and overlay phases
+- 🧾 **Persistent Job Store**: Translation state is stored in `data/jobs.json` (survives process restarts)
+- 💾 **Deduplication Cache**: Persistent SQLite storage to avoid re-translating identical blocks (saves $$$ and time)
+- 📖 **Dynamic Glossary**: Force specific translations via `data/glossary.json`
+- 📏 **Semantic Autofit**: AI-powered text shortening if the translation doesn't fit the original layout
+- 🧭 **Stable Paths**: Runtime files resolve from project root (independent of process working directory)
+- 🌐 Modern dark-mode web UI with drag-and-drop & confetti success effects
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
 | Backend | Python · FastAPI · Uvicorn |
+| Progress tracking | HTTP polling (`GET /status/{job_id}`) + JSON job store |
+| Cache | SQLite3 (Persistent deduplication) |
 | PDF Read & Overlay | PyMuPDF (fitz) - v2 Architecture |
-| Primary Translation | LLMs via OpenAI / Google Generative AI SDK |
-| Translator Fallback | Google Translate (deep-translator) with Circuit Breaker |
-| Frontend | Vanilla HTML · CSS · JavaScript |
+| Primary Translation | LLMs (OpenAI / Gemini / Anthropic / Groq) |
+| UI | Vanilla HTML · CSS · JS · Canvas-Confetti |
 
 ## Quick Start
 
@@ -28,23 +33,50 @@
 git clone https://github.com/Medalcode/PDFTranslate.git
 cd PDFTranslate
 
-# 2. Create a virtual environment
+# 2. Create and activate a virtual environment (Linux/macOS)
 python -m venv venv
-venv\Scripts\activate   # Windows
-# source venv/bin/activate  # macOS/Linux
+source venv/bin/activate
+
+# On Windows (PowerShell)
+# python -m venv venv
+# .\venv\Scripts\Activate.ps1
 
 # 3. Install dependencies
 pip install -r requirements.txt
 
 # 4. Configure (optional)
 cp .env.example .env
-# Edit .env to change source/target language
+# Edit .env to change SOURCE_LANG / TARGET_LANG and LLM settings
 
-# 5. Run the app
+# 5. Run the app (development)
 uvicorn app.main:app --reload
 ```
 
 Then open [http://localhost:8000](http://localhost:8000) in your browser.
+
+## Run Tests
+
+```bash
+python3 -m pytest -q
+```
+
+If `pytest` is missing in your environment, install it first:
+
+```bash
+python3 -m pip install pytest
+```
+
+## Commit & Push
+
+After making changes, follow this minimal workflow:
+
+```bash
+git add .
+git commit -m "chore: update README with setup, tests and push instructions"
+git push
+```
+
+If your repository requires a specific remote or branch, specify it with `git push <remote> <branch>`.
 
 ## API Endpoints
 
@@ -61,17 +93,22 @@ Then open [http://localhost:8000](http://localhost:8000) in your browser.
 PDFTranslate/
 ├── app/
 │   ├── main.py            # FastAPI routes
-│   ├── config.py          # Settings & directories
+│   ├── config.py          # Settings & directories (data/ uploads/outputs)
+│   ├── job_store.py       # Persistent translation job metadata
+│   ├── paths.py           # Project-root path resolution helpers
 │   ├── translator.py      # Core PDF translation engine
-│   └── text_classifier.py # Code / title / text detection
-├── static/
-│   ├── index.html         # Web UI
+│   └── classifiers.py     # Code / title / text detection logic
+├── data/                  # Dynamic data (ignored in git)
+│   ├── uploads/           # Temporary input PDFs
+│   └── outputs/           # Translated PDF outputs
+├── static/                # Web Frontend
+│   ├── index.html         # User Interface
 │   ├── css/style.css      # Premium dark-mode styles
-│   └── js/app.js          # Upload / polling / download logic
-├── uploads/               # Temporary input PDFs
-├── outputs/               # Translated PDF outputs
-├── agents.md              # Documentación y roles de IA
-├── skills.md              # Documentación de Super-Skills de IA
+│   └── js/app.js          # Async logic
+├── tests/                 # Automated QA tests
+│   └── test_basic.py      # Basic sanity checks
+├── agents.md              # IA: Roles y Agentes consolidados
+├── skills.md              # IA: Super-Skills de procesamiento
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -97,15 +134,18 @@ Any language code supported by Google Translate/LLM works (e.g. `fr`, `de`, `pt`
 
 ## How It Works (v2 Architecture)
 
-1. User uploads a PDF via the web UI.
-2. FastAPI starts a background translation task.
-3. **Pass 1: Extraction**. **PyMuPDF** reads each page, extracting text blocks, fonts, and exact bounding boxes.
-    - Text is classified: `code` (never translated), `title`, or `body`.
-4. **Pass 2: Translation**.
-    - The text is grouped into batches and sent to the configured **LLM (OpenAI/Gemini/Groq)**.
-    - **Circuit Breaker:** If the LLM hits persistent rate limits or quotas (e.g., HTTP 429), a circuit breaker triggers. The system instantly aborts the LLM and falls back to **Google Translate** to finish the document. This prevents the pipeline from hanging for hours.
-5. **Pass 3: Overlay**. The translated text is carefully re-inserted onto the exact *original* coordinates on the document, automatically downscaling the font if the translation is longer than the original text. The original text underneath is redacted.
-6. The exact output PDF is saved and made available for download, with 0% layout deformation.
+1. **Upload**: User drops a PDF. FastAPI stores a queued job record and spawns a background task.
+2. **Phase 1: Extraction**: PyMuPDF extracts text, fonts, and bounding boxes.
+3. **Phase 2: Intelligent Translation**: 
+    - **Cache Lookup**: Skips blocks already translated in previous jobs.
+    - **Glossary Injection**: Ensures business terms are translated as defined.
+    - **LLM Batching**: Translates remaining blocks via chosen provider.
+    - **Circuit Breaker**: Auto-switch to Google Translate if LLM fails/quota hits.
+4. **Phase 3: Visual Overlay & Semantic Fit**:
+    - If a translated paragraph is too long, the system **shrink-fits** the font down to 6pt.
+    - If it *still* overflows, the **LLM semantically shortens** the text while keeping original meaning.
+5. **Status & Delivery**: The frontend polls `/status/{job_id}` once per second and enables download when status becomes `done`.
+6. **Success**: The final PDF is saved in `data/outputs/` and the UI triggers a confetti celebration.
 
 ## License
 

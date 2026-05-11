@@ -10,10 +10,12 @@ from enum import Enum
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import OUTPUT_DIR, SOURCE_LANG, TARGET_LANG, UPLOAD_DIR
+from app.job_store import ensure_job, get_job, update_job
+from app.paths import project_path
 from app.translator import translate_pdf
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -26,42 +28,64 @@ app = FastAPI(
 )
 
 # ── Static files ────────────────────────────────────────────────────────────
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(project_path("static"))), name="static")
 
 
-# ── Job state store (in-memory, sufficient for single-user local use) ────────
+# ── Job state store ──────────────────────────────────────────────────────────
 class JobStatus(str, Enum):
     PROCESSING = "processing"
     DONE = "done"
     ERROR = "error"
 
 
-jobs: dict[str, dict] = {}  # job_id -> {status, output_path, error}
-
-
 # ── Background worker ─────────────────────────────────────────────────────────
 def _run_translation(job_id: str, input_path: str, output_path: str, source: str, target: str):
     logger.info("Job %s started (src=%s → tgt=%s)", job_id, source, target)
+    
+    # Progress callback persists state so any worker can report status.
+    def progress_cb(phase, current, total):
+        update_job(
+            job_id,
+            status=JobStatus.PROCESSING,
+            phase=phase,
+            current=current,
+            total=total,
+        )
+
     try:
         translate_pdf(
             input_path=input_path,
             output_path=output_path,
             source_lang=source,
             target_lang=target,
+            progress_callback=progress_cb
         )
-        jobs[job_id]["status"] = JobStatus.DONE
+        update_job(
+            job_id,
+            status=JobStatus.DONE,
+            phase="done",
+            current=100,
+            total=100,
+            error=None,
+        )
         logger.info("Job %s completed → %s", job_id, output_path)
     except Exception as exc:
         logger.exception("Job %s failed: %s", job_id, exc)
-        jobs[job_id]["status"] = JobStatus.ERROR
-        jobs[job_id]["error"] = str(exc)
+        update_job(
+            job_id,
+            status=JobStatus.ERROR,
+            phase="error",
+            current=0,
+            total=0,
+            error=str(exc),
+        )
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    html_path = Path("static/index.html")
+    html_path = project_path("static", "index.html")
     return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
 
 
@@ -84,12 +108,18 @@ async def translate(
         shutil.copyfileobj(file.file, buf)
 
     # Register job
-    jobs[job_id] = {
-        "status": JobStatus.PROCESSING,
-        "output_path": output_path,
-        "error": None,
-        "filename": file.filename,
-    }
+    ensure_job(
+        job_id,
+        status=JobStatus.PROCESSING,
+        phase="queued",
+        current=0,
+        total=0,
+        output_path=output_path,
+        error=None,
+        filename=file.filename,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
 
     # Start background translation
     background_tasks.add_task(
@@ -105,21 +135,24 @@ async def translate(
 
 @app.get("/status/{job_id}")
 async def status(job_id: str):
-    if job_id not in jobs:
+    job = get_job(job_id)
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
-    job = jobs[job_id]
     return {
         "job_id": job_id,
-        "status": job["status"],
+        "status": job.get("status"),
+        "phase": job.get("phase"),
+        "current": job.get("current", 0),
+        "total": job.get("total", 0),
         "error": job.get("error"),
     }
 
 
 @app.get("/download/{job_id}")
 async def download(job_id: str):
-    if job_id not in jobs:
+    job = get_job(job_id)
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
-    job = jobs[job_id]
     if job["status"] != JobStatus.DONE:
         raise HTTPException(status_code=400, detail="Translation not ready yet.")
     output_path = job["output_path"]

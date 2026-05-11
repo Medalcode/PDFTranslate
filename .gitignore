@@ -16,9 +16,8 @@ env/
 # Environment variables
 .env
 
-# App generated files
-uploads/
-outputs/
+# App generated files (dynamic data)
+data/
 temp_images/
 
 # IDE

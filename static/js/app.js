@@ -30,6 +30,7 @@
 
   let selectedFile = null;
   let pollInterval  = null;
+  let activeJobId   = null;
 
   // ── File formatting ───────────────────────────────────────────────────────
   function formatBytes(bytes) {
@@ -99,6 +100,101 @@
     btnText.textContent = "Translate PDF";
     hideError();
     if (pollInterval) clearInterval(pollInterval);
+    pollInterval = null;
+    activeJobId = null;
+  }
+
+  function stopPolling() {
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = null;
+  }
+
+  function progressForStatus(data) {
+    if (data.status === "done") {
+      return { pct: 100, label: "Translation Complete!", step: "step-done" };
+    }
+
+    if (data.status === "error") {
+      return { pct: 0, label: "Translation failed", step: "step-translate" };
+    }
+
+    const phase = data.phase || "queued";
+    const current = Number(data.current || 0);
+    const total = Number(data.total || 0) || 1;
+
+    if (phase === "extract") {
+      return {
+        pct: Math.round((current / total) * 33),
+        label: `Extracting content: page ${current} of ${total}`,
+        step: "step-upload",
+      };
+    }
+
+    if (phase === "translate") {
+      return {
+        pct: 33 + Math.round((current / total) * 33),
+        label: "Translating blocks…",
+        step: "step-translate",
+      };
+    }
+
+    if (phase === "overlay") {
+      return {
+        pct: 66 + Math.round((current / total) * 34),
+        label: `Restoring layout: page ${current} of ${total}`,
+        step: "step-translate",
+      };
+    }
+
+    return { pct: 10, label: "Queued…", step: "step-upload" };
+  }
+
+  async function refreshStatus(jobId) {
+    const res = await fetch(`/status/${jobId}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Could not load job status.");
+    }
+
+    const data = await res.json();
+    const progress = progressForStatus(data);
+
+    setProgress(progress.pct, progress.label);
+    activateStep(progress.step);
+
+    if (data.status === "done") {
+      stopPolling();
+      setProgress(100, "Translation Complete!");
+      confetti({
+        particleCount: 150,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ["#3b82f6", "#8b5cf6", "#10b981"],
+      });
+
+      stepTranslate.classList.remove("active");
+      stepTranslate.classList.add("done");
+      stepDone.classList.add("active");
+      stepDone.classList.add("done");
+
+      setTimeout(() => {
+        progressSec.style.display = "none";
+        downloadSec.style.display = "flex";
+        btnDownload.href = `/download/${jobId}`;
+      }, 800);
+      return true;
+    }
+
+    if (data.status === "error") {
+      stopPolling();
+      showError(data.error || "Translation failed. Check the PDF format or LLM quota.");
+      progressSec.style.display = "none";
+      btnTranslate.style.display = "flex";
+      btnTranslate.disabled = false;
+      return true;
+    }
+
+    return false;
   }
 
   // ── Drag & drop ───────────────────────────────────────────────────────────
@@ -167,55 +263,26 @@
       return;
     }
 
-    // Upload done → start translating
-    setProgress(30, "Translating pages…");
-    activateStep("step-translate");
+    activeJobId = jobId;
+    setProgress(10, "Queued…");
+    activateStep("step-upload");
 
-    // ── Poll status ──────────────────────────────────────────────────────
-    let fakePct = 30;
-    pollInterval = setInterval(async () => {
-      try {
-        const res = await fetch(`/status/${jobId}`);
-        if (!res.ok) throw new Error("Status check failed.");
-        const data = await res.json();
-
-        if (data.status === "done") {
-          clearInterval(pollInterval);
-          pollInterval = null;
-          setProgress(100, "Complete!");
-          stepTranslate.classList.remove("active");
-          stepTranslate.classList.add("done");
-          stepDone.classList.add("active");
-          stepDone.classList.add("done");
-
-          // Show download
-          setTimeout(() => {
-            progressSec.style.display = "none";
-            downloadSec.style.display = "flex";
-            btnDownload.href = `/download/${jobId}`;
-          }, 600);
-
-        } else if (data.status === "error") {
-          clearInterval(pollInterval);
-          pollInterval = null;
-          const errDetail = data.error || "Translation failed. Please try again.";
-          showError(errDetail);
-          progressSec.style.display = "none";
-          btnTranslate.style.display = "flex";
-          btnTranslate.disabled = false;
-
-        } else {
-          // Still processing — increment progress bar slowly
-          if (fakePct < 90) {
-            fakePct = Math.min(fakePct + 2, 90);
-            setProgress(fakePct, "Translating pages…");
-          }
-        }
-      } catch (err) {
-        // Don't break on transient network errors during polling
-        console.warn("Polling error:", err);
+    stopPolling();
+    await refreshStatus(jobId);
+    pollInterval = window.setInterval(() => {
+      if (!activeJobId) {
+        stopPolling();
+        return;
       }
-    }, 2000);
+      refreshStatus(activeJobId).catch((err) => {
+        console.error("Status poll error:", err);
+        showError(err.message || "Connection lost. Please refresh or check the PDF status.");
+        stopPolling();
+        progressSec.style.display = "none";
+        btnTranslate.style.display = "flex";
+        btnTranslate.disabled = false;
+      });
+    }, 1000);
   });
 
   // ── Reset ─────────────────────────────────────────────────────────────────

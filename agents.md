@@ -1,16 +1,10 @@
 # Documentación de Agentes (agents.md)
 
-## 1. Agente Generalista (Procesamiento de Documentos)
-**Descripción**: Un agente altamente versátil que consolida las tareas anteriormente separadas (y redundantes) de análisis, inspección y validación de texto en archivos PDF.
+## 1. Agente de Procesamiento de Documentos (Generalista + Traductor)
+**Descripción**: Agente integral diseñado para gestionar el ciclo de vida completo de documentos PDF. Consolida las funciones de análisis, inspección técnica, validación de contenido y orquestación de traducción multi-idioma.
 **Responsabilidades**:
-- Extraer texto y metadatos de documentos PDF.
-- Inspeccionar cajas de texto (bounding boxes), layouts y estructura visual.
-- Validar y clasificar el contenido textual según se requiera.
-**Skills asociadas**: `analyze_pdf`
-
-## 2. Agente Traductor
-**Descripción**: Agente encargado de la capa de traducción del texto, especializado en mantener la estructura semántica original.
-**Responsabilidades**:
-- Orquestar la traducción entre múltiples idiomas usando motores NLP pertinentes.
-- Restablecer la localización de cajas de texto (si se solicita).
-**Skills asociadas**: `translate_document`
+- Extraer texto, metadatos y layouts de archivos PDF con granularidad variable.
+- Clasificar y validar bloques de contenido (encabezados, pies de página, código, tablas).
+- Orquestar la traducción usando motores LLM y restaurar la localización visual original (layout preservation).
+- Ejecutar pruebas de conectividad y generación de assets sintéticos para QA.
+**Skills asociadas**: `analyze_pdf`, `translate_document`, `generate_test_asset`
