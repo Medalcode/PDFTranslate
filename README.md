@@ -31,23 +31,44 @@
 git clone https://github.com/Medalcode/PDFTranslate.git
 cd PDFTranslate
 
-# 2. Create a virtual environment
+# 2. Create and activate a virtual environment (Linux/macOS)
 python -m venv venv
-venv\Scripts\activate   # Windows
-# source venv/bin/activate  # macOS/Linux
+source venv/bin/activate
+
+# On Windows (PowerShell)
+# python -m venv venv
+# .\venv\Scripts\Activate.ps1
 
 # 3. Install dependencies
 pip install -r requirements.txt
 
 # 4. Configure (optional)
 cp .env.example .env
-# Edit .env to change source/target language
+# Edit .env to change SOURCE_LANG / TARGET_LANG and LLM settings
 
-# 5. Run the app
+# 5. Run the app (development)
 uvicorn app.main:app --reload
 ```
 
 Then open [http://localhost:8000](http://localhost:8000) in your browser.
+
+## Run Tests
+
+```bash
+pytest -q
+```
+
+## Commit & Push
+
+After making changes, follow this minimal workflow:
+
+```bash
+git add .
+git commit -m "chore: update README with setup, tests and push instructions"
+git push
+```
+
+If your repository requires a specific remote or branch, specify it with `git push <remote> <branch>`.
 
 ## API Endpoints
 
