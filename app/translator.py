@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 _TRANSLATION_PROMPT = """\
 You are a professional technical translator specialized in preserving document structure.
 
-Translate the following numbered text blocks from English to Spanish.
+Translate the following numbered text blocks from {source_lang} to {target_lang}.
 
 STRICT RULES:
 1. Return EXACTLY the same number of numbered blocks in [N] format.
@@ -190,7 +190,7 @@ class LLMQuotaExceeded(Exception):
     pass
 
 
-def _translate_with_llm(texts: list[str], llm: _LLMBase, target_lang: str) -> list[str]:
+def _translate_with_llm(texts: list[str], llm: _LLMBase, source_lang: str, target_lang: str) -> list[str]:
     """Translate blocks using LLM with internal caching and glossary support."""
     results = [None] * len(texts)
     to_translate_idxs = []
@@ -224,7 +224,12 @@ def _translate_with_llm(texts: list[str], llm: _LLMBase, target_lang: str) -> li
             ph_maps.append(ph)
 
         numbered = "\n\n".join(f"[{i+1}] {t}" for i, t in enumerate(protected_batch))
-        prompt = _TRANSLATION_PROMPT.format(glossary_rules=g_rules, blocks=numbered)
+        prompt = _TRANSLATION_PROMPT.format(
+            source_lang=source_lang,
+            target_lang=target_lang,
+            glossary_rules=g_rules,
+            blocks=numbered,
+        )
 
         success = False
         for attempt in range(4):
@@ -520,7 +525,7 @@ def translate_pdf(
             try:
                 # Mock progress for LLM batching (Pass 2)
                 if progress_callback: progress_callback("translate", 10, 100)
-                translated = _translate_with_llm(texts_to_translate, llm, target_lang)
+                translated = _translate_with_llm(texts_to_translate, llm, source_lang, target_lang)
                 if progress_callback: progress_callback("translate", 100, 100)
             except LLMQuotaExceeded as exc:
                 logger.error("LLM aborted (%s). Switching to Google Translate fallback...", exc)

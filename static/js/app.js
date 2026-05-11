@@ -30,6 +30,7 @@
 
   let selectedFile = null;
   let pollInterval  = null;
+  let activeJobId   = null;
 
   // ── File formatting ───────────────────────────────────────────────────────
   function formatBytes(bytes) {
@@ -99,6 +100,101 @@
     btnText.textContent = "Translate PDF";
     hideError();
     if (pollInterval) clearInterval(pollInterval);
+    pollInterval = null;
+    activeJobId = null;
+  }
+
+  function stopPolling() {
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = null;
+  }
+
+  function progressForStatus(data) {
+    if (data.status === "done") {
+      return { pct: 100, label: "Translation Complete!", step: "step-done" };
+    }
+
+    if (data.status === "error") {
+      return { pct: 0, label: "Translation failed", step: "step-translate" };
+    }
+
+    const phase = data.phase || "queued";
+    const current = Number(data.current || 0);
+    const total = Number(data.total || 0) || 1;
+
+    if (phase === "extract") {
+      return {
+        pct: Math.round((current / total) * 33),
+        label: `Extracting content: page ${current} of ${total}`,
+        step: "step-upload",
+      };
+    }
+
+    if (phase === "translate") {
+      return {
+        pct: 33 + Math.round((current / total) * 33),
+        label: "Translating blocks…",
+        step: "step-translate",
+      };
+    }
+
+    if (phase === "overlay") {
+      return {
+        pct: 66 + Math.round((current / total) * 34),
+        label: `Restoring layout: page ${current} of ${total}`,
+        step: "step-translate",
+      };
+    }
+
+    return { pct: 10, label: "Queued…", step: "step-upload" };
+  }
+
+  async function refreshStatus(jobId) {
+    const res = await fetch(`/status/${jobId}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Could not load job status.");
+    }
+
+    const data = await res.json();
+    const progress = progressForStatus(data);
+
+    setProgress(progress.pct, progress.label);
+    activateStep(progress.step);
+
+    if (data.status === "done") {
+      stopPolling();
+      setProgress(100, "Translation Complete!");
+      confetti({
+        particleCount: 150,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ["#3b82f6", "#8b5cf6", "#10b981"],
+      });
+
+      stepTranslate.classList.remove("active");
+      stepTranslate.classList.add("done");
+      stepDone.classList.add("active");
+      stepDone.classList.add("done");
+
+      setTimeout(() => {
+        progressSec.style.display = "none";
+        downloadSec.style.display = "flex";
+        btnDownload.href = `/download/${jobId}`;
+      }, 800);
+      return true;
+    }
+
+    if (data.status === "error") {
+      stopPolling();
+      showError(data.error || "Translation failed. Check the PDF format or LLM quota.");
+      progressSec.style.display = "none";
+      btnTranslate.style.display = "flex";
+      btnTranslate.disabled = false;
+      return true;
+    }
+
+    return false;
   }
 
   // ── Drag & drop ───────────────────────────────────────────────────────────
@@ -167,76 +263,26 @@
       return;
     }
 
-    // Upload done → start translating
-    setProgress(30, "Translating pages…");
-    activateStep("step-translate");
+    activeJobId = jobId;
+    setProgress(10, "Queued…");
+    activateStep("step-upload");
 
-    // ── WebSocket status ──────────────────────────────────────────────────────
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${protocol}//${window.location.host}/ws/${jobId}`);
-
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === "progress") {
-        let pct = 0;
-        let label = "";
-
-        if (data.phase === "extract") {
-          pct = Math.round((data.current / data.total) * 33);
-          label = `Extracting content: page ${data.current} of ${data.total}`;
-          activateStep("step-upload"); 
-        } else if (data.phase === "translate") {
-          pct = 33 + Math.round((data.current / data.total) * 33);
-          label = "AI Brain: Translating blocks (Pass 2/3)";
-          activateStep("step-translate");
-        } else if (data.phase === "overlay") {
-          pct = 66 + Math.round((data.current / data.total) * 34);
-          label = `Visual Layout Restoration: Page ${data.current}`;
-          activateStep("step-translate");
-        } else if (data.phase === "done") {
-          setProgress(100, "Translation Complete!");
-          socket.close();
-          
-          // Victory Confetti!
-          confetti({
-            particleCount: 150,
-            spread: 70,
-            origin: { y: 0.6 },
-            colors: ['#3b82f6', '#8b5cf6', '#10b981']
-          });
-
-          stepTranslate.classList.remove("active");
-          stepTranslate.classList.add("done");
-          stepDone.classList.add("active");
-          stepDone.classList.add("done");
-
-          setTimeout(() => {
-            progressSec.style.display = "none";
-            downloadSec.style.display = "flex";
-            btnDownload.href = `/download/${jobId}`;
-          }, 800);
-          return;
-        } else if (data.phase === "error") {
-          socket.close();
-          showError("Translation failed. Check the PDF format or LLM quota.");
-          progressSec.style.display = "none";
-          btnTranslate.style.display = "flex";
-          btnTranslate.disabled = false;
-          return;
-        }
-        setProgress(pct, label);
+    stopPolling();
+    await refreshStatus(jobId);
+    pollInterval = window.setInterval(() => {
+      if (!activeJobId) {
+        stopPolling();
+        return;
       }
-    };
-
-    socket.onerror = (err) => {
-      console.error("WS Error:", err);
-      // Fallback: poll status once (or simple error notification)
-      showError("Connection lost. Please refresh or check the PDF status.");
-    };
-
-    socket.onclose = () => {
-      console.log("WS connection closed.");
-    };
+      refreshStatus(activeJobId).catch((err) => {
+        console.error("Status poll error:", err);
+        showError(err.message || "Connection lost. Please refresh or check the PDF status.");
+        stopPolling();
+        progressSec.style.display = "none";
+        btnTranslate.style.display = "flex";
+        btnTranslate.disabled = false;
+      });
+    }, 1000);
   });
 
   // ── Reset ─────────────────────────────────────────────────────────────────

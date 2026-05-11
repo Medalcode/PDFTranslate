@@ -7,10 +7,12 @@
 - 📄 English → Spanish Translation (configurable)
 - 🖼️ Preserves images, font size, and layout using exact bounding boxes
 - 💻 Code-aware: source code blocks are never translated
-- ⚡ **Real-time Progress**: Powered by WebSockets (Phase 1: Extract, Phase 2: Translate, Phase 3: Overlay)
+- ⚡ **Real-time Progress**: Persistent status polling (`/status/{job_id}`) across extraction, translation, and overlay phases
+- 🧾 **Persistent Job Store**: Translation state is stored in `data/jobs.json` (survives process restarts)
 - 💾 **Deduplication Cache**: Persistent SQLite storage to avoid re-translating identical blocks (saves $$$ and time)
 - 📖 **Dynamic Glossary**: Force specific translations via `data/glossary.json`
 - 📏 **Semantic Autofit**: AI-powered text shortening if the translation doesn't fit the original layout
+- 🧭 **Stable Paths**: Runtime files resolve from project root (independent of process working directory)
 - 🌐 Modern dark-mode web UI with drag-and-drop & confetti success effects
 
 ## Tech Stack
@@ -18,7 +20,7 @@
 | Layer | Technology |
 |-------|-----------|
 | Backend | Python · FastAPI · Uvicorn |
-| Real-time | WebSockets (Bi-directional progress) |
+| Progress tracking | HTTP polling (`GET /status/{job_id}`) + JSON job store |
 | Cache | SQLite3 (Persistent deduplication) |
 | PDF Read & Overlay | PyMuPDF (fitz) - v2 Architecture |
 | Primary Translation | LLMs (OpenAI / Gemini / Anthropic / Groq) |
@@ -55,7 +57,13 @@ Then open [http://localhost:8000](http://localhost:8000) in your browser.
 ## Run Tests
 
 ```bash
-pytest -q
+python3 -m pytest -q
+```
+
+If `pytest` is missing in your environment, install it first:
+
+```bash
+python3 -m pip install pytest
 ```
 
 ## Commit & Push
@@ -86,6 +94,8 @@ PDFTranslate/
 ├── app/
 │   ├── main.py            # FastAPI routes
 │   ├── config.py          # Settings & directories (data/ uploads/outputs)
+│   ├── job_store.py       # Persistent translation job metadata
+│   ├── paths.py           # Project-root path resolution helpers
 │   ├── translator.py      # Core PDF translation engine
 │   └── classifiers.py     # Code / title / text detection logic
 ├── data/                  # Dynamic data (ignored in git)
@@ -124,7 +134,7 @@ Any language code supported by Google Translate/LLM works (e.g. `fr`, `de`, `pt`
 
 ## How It Works (v2 Architecture)
 
-1. **Upload**: User drops a PDF. FastAPI spawns a background task and establishes a **WebSocket** connection for real-time reporting.
+1. **Upload**: User drops a PDF. FastAPI stores a queued job record and spawns a background task.
 2. **Phase 1: Extraction**: PyMuPDF extracts text, fonts, and bounding boxes.
 3. **Phase 2: Intelligent Translation**: 
     - **Cache Lookup**: Skips blocks already translated in previous jobs.
@@ -134,7 +144,8 @@ Any language code supported by Google Translate/LLM works (e.g. `fr`, `de`, `pt`
 4. **Phase 3: Visual Overlay & Semantic Fit**:
     - If a translated paragraph is too long, the system **shrink-fits** the font down to 6pt.
     - If it *still* overflows, the **LLM semantically shortens** the text while keeping original meaning.
-5. **Success**: The final PDF is saved in `data/outputs/` and the UI triggers a confetti celebration.
+5. **Status & Delivery**: The frontend polls `/status/{job_id}` once per second and enables download when status becomes `done`.
+6. **Success**: The final PDF is saved in `data/outputs/` and the UI triggers a confetti celebration.
 
 ## License
 

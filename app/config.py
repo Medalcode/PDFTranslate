@@ -1,12 +1,16 @@
+import json
 import os
+
 from dotenv import load_dotenv
+
+from app.paths import resolve_user_path
 
 load_dotenv()
 
 SOURCE_LANG: str = os.getenv("SOURCE_LANG", "en")
 TARGET_LANG: str = os.getenv("TARGET_LANG", "es")
-UPLOAD_DIR: str  = os.getenv("UPLOAD_DIR", "data/uploads")
-OUTPUT_DIR: str  = os.getenv("OUTPUT_DIR", "data/outputs")
+UPLOAD_DIR = resolve_user_path(os.getenv("UPLOAD_DIR"), "data/uploads")
+OUTPUT_DIR = resolve_user_path(os.getenv("OUTPUT_DIR"), "data/outputs")
 
 # ── LLM Configuration (optional — vastly improves translation quality) ────────
 # Provider: "gemini" | "openai" | "custom" (OpenAI-compatible)
@@ -17,7 +21,6 @@ LLM_BASE_URL: str  = os.getenv("LLM_BASE_URL", "")    # for custom/local endpoin
 
 # ── Protected technical terms ─────────────────────────────────────────────────
 # Define here the terms that the translators should skip.
-import json
 _default_terms = [
     "Hadoop", "HDFS", "YARN", "MapReduce", "Spark", "Hive", "Pig",
     "Flume", "Sqoop", "HBase", "ZooKeeper", "Avro", "Parquet",
@@ -44,9 +47,9 @@ else:
 # ── Glossary (Dynamic Force Translation) ──────────────────────────────────────
 # Loads from data/glossary.json if exists
 GLOSSARY: dict[str, str] = {}
-GLOSSARY_PATH = "data/glossary.json"
+GLOSSARY_PATH = resolve_user_path(os.getenv("GLOSSARY_PATH"), "data/glossary.json")
 
-if os.path.exists(GLOSSARY_PATH):
+if GLOSSARY_PATH.exists():
     try:
         with open(GLOSSARY_PATH, "r", encoding="utf-8") as f:
             GLOSSARY = json.load(f)

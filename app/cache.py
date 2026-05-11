@@ -1,10 +1,11 @@
 import sqlite3
 import hashlib
 import logging
-from pathlib import Path
+
+from app.paths import project_path
 
 logger = logging.getLogger(__name__)
-CACHE_DB = Path("data/translations_cache.db")
+CACHE_DB = project_path("data", "translations_cache.db")
 
 def init_cache():
     """Ensure the cache database exists with the correct schema."""
