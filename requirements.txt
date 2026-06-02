@@ -17,3 +17,4 @@ openai>=1.0.0                 # for LLM_PROVIDER=openai | custom
 
 # Utilities
 beautifulsoup4==4.12.3
+ocrmypdf==17.5.0

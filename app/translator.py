@@ -394,18 +394,26 @@ def _insert_autofit(
     fname = _pdf_fontname(font_name, bold, italic)
     fs = max(font_size, 7.0)
 
+    # Use a dummy document to test text fitting without corrupting the real page
+    dummy_doc = fitz.open()
+    dummy_page = dummy_doc.new_page(width=page.rect.width, height=page.rect.height)
+
     while fs >= _MIN_FONT:
-        rc = page.insert_textbox(
-            rect,
-            text,
+        dummy_page.clean_contents()
+        rc = dummy_page.insert_textbox(
+            rect, text,
             fontname=fname,
             fontsize=fs,
             color=color,
             align=0,
         )
-        if rc >= 0:
+        if rc == 0:
+            page.insert_textbox(rect, text, fontname=fname, fontsize=fs, color=color, align=0)
+            dummy_doc.close()
             return
         fs -= 0.5
+        
+    dummy_doc.close()
 
     # If it still doesn't fit at 6pt and we have an LLM, try semantic shortening
     if llm and len(text) > 20:
@@ -455,6 +463,27 @@ def translate_pdf(
 
     doc = fitz.open(input_path)
     total_pages = len(doc)
+
+    # ── Optional: OCR for scanned PDFs ────────────────────────────────────────
+    total_text_length = sum(len(page.get_text()) for page in doc)
+    if total_text_length < 50:
+        logger.info("Minimal text detected. Attempting OCR...")
+        doc.close()
+        import subprocess
+        try:
+            ocr_path = input_path.replace(".pdf", "_ocr.pdf")
+            # ocrmypdf adds a hidden text layer
+            subprocess.run(
+                ["ocrmypdf", input_path, ocr_path],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            input_path = ocr_path
+            doc = fitz.open(input_path)
+            total_pages = len(doc)
+            logger.info("OCR completed. Proceeding with translation.")
+        except Exception as exc:
+            logger.warning("OCR failed (is tesseract installed?): %s. Proceeding without OCR.", exc)
+            doc = fitz.open(input_path)
 
     # ── Pass 1: Extract all text blocks ──────────────────────────────────────
     all_blocks: list[dict] = []

@@ -12,19 +12,36 @@ from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+import asyncio
+from contextlib import asynccontextmanager
 
 from app.config import OUTPUT_DIR, SOURCE_LANG, TARGET_LANG, UPLOAD_DIR
-from app.job_store import ensure_job, get_job, update_job
+from app.job_store import ensure_job, get_job, update_job, mark_zombie_jobs, cleanup_old_jobs
 from app.paths import project_path
 from app.translator import translate_pdf
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+async def run_periodic_cleanup():
+    while True:
+        await asyncio.sleep(3600)  # Run cleanup every hour
+        cleanup_old_jobs(24)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting up PDFTranslate server... running initial maintenance.")
+    mark_zombie_jobs()
+    cleanup_old_jobs(24)
+    task = asyncio.create_task(run_periodic_cleanup())
+    yield
+    task.cancel()
+
 app = FastAPI(
     title="PDFTranslate",
     description="AI-powered PDF translator that preserves original layout.",
     version="1.0.0",
+    lifespan=lifespan
 )
 
 # ── Static files ────────────────────────────────────────────────────────────

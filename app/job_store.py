@@ -1,82 +1,134 @@
-from __future__ import annotations
-
+import sqlite3
 import json
-import os
-import threading
-from contextlib import contextmanager
-from pathlib import Path
+import logging
 from typing import Any
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - non-Linux fallback
-    fcntl = None
+from pathlib import Path
 
 from app.paths import project_path
 
-JOBS_DB: Path = project_path("data", "jobs.json")
-LOCK_FILE: Path = JOBS_DB.with_suffix(".lock")
-_THREAD_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
+JOBS_DB = project_path("data", "jobs.db")
 
-
-def _read_all_unlocked() -> dict[str, dict[str, Any]]:
-    if not JOBS_DB.exists():
-        return {}
-    try:
-        return json.loads(JOBS_DB.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _write_all_unlocked(data: dict[str, dict[str, Any]]) -> None:
+def init_job_store():
     JOBS_DB.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = JOBS_DB.with_suffix(".tmp")
-    tmp_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    os.replace(tmp_path, JOBS_DB)
-
-
-@contextmanager
-def _exclusive_lock():
-    JOBS_DB.parent.mkdir(parents=True, exist_ok=True)
-    lock_handle = LOCK_FILE.open("a+", encoding="utf-8")
     try:
-        with _THREAD_LOCK:
-            if fcntl is not None:
-                fcntl.flock(lock_handle, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                if fcntl is not None:
-                    fcntl.flock(lock_handle, fcntl.LOCK_UN)
-    finally:
-        lock_handle.close()
+        with sqlite3.connect(str(JOBS_DB)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS jobs (
+                    job_id TEXT PRIMARY KEY,
+                    data TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+    except Exception as e:
+        logger.error("Failed to initialize job store: %s", e)
 
+# Initialize on import
+init_job_store()
 
 def ensure_job(job_id: str, **fields: Any) -> dict[str, Any]:
-    with _exclusive_lock():
-        data = _read_all_unlocked()
-        job = data.get(job_id, {})
-        job.update(fields)
-        data[job_id] = job
-        _write_all_unlocked(data)
-        return dict(job)
-
+    try:
+        with sqlite3.connect(str(JOBS_DB)) as conn:
+            # Check if job exists
+            res = conn.execute("SELECT data FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if res:
+                job_data = json.loads(res[0])
+            else:
+                job_data = {}
+            
+            job_data.update(fields)
+            conn.execute(
+                "INSERT OR REPLACE INTO jobs (job_id, data) VALUES (?, ?)",
+                (job_id, json.dumps(job_data))
+            )
+            conn.commit()
+            return job_data
+    except Exception as e:
+        logger.error("Failed to ensure job %s: %s", job_id, e)
+        return fields
 
 def update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
-    with _exclusive_lock():
-        data = _read_all_unlocked()
-        if job_id not in data:
-            return None
-        data[job_id].update(fields)
-        _write_all_unlocked(data)
-        return dict(data[job_id])
-
+    try:
+        with sqlite3.connect(str(JOBS_DB)) as conn:
+            res = conn.execute("SELECT data FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if not res:
+                return None
+            
+            job_data = json.loads(res[0])
+            job_data.update(fields)
+            
+            conn.execute(
+                "UPDATE jobs SET data = ? WHERE job_id = ?",
+                (json.dumps(job_data), job_id)
+            )
+            conn.commit()
+            return job_data
+    except Exception as e:
+        logger.error("Failed to update job %s: %s", job_id, e)
+        return None
 
 def get_job(job_id: str) -> dict[str, Any] | None:
-    with _exclusive_lock():
-        data = _read_all_unlocked()
-        job = data.get(job_id)
-        return dict(job) if job else None
+    try:
+        with sqlite3.connect(str(JOBS_DB)) as conn:
+            res = conn.execute("SELECT data FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if res:
+                return json.loads(res[0])
+            return None
+    except Exception as e:
+        logger.error("Failed to get job %s: %s", job_id, e)
+        return None
+
+def mark_zombie_jobs():
+    """Mark jobs that were left in 'processing' state from a previous run as 'error'."""
+    try:
+        with sqlite3.connect(str(JOBS_DB)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT job_id, data FROM jobs")
+            rows = cursor.fetchall()
+            for job_id, data_str in rows:
+                data = json.loads(data_str)
+                if data.get("status") == "processing":
+                    data["status"] = "error"
+                    data["error"] = "Interrupted by server restart"
+                    data["phase"] = "error"
+                    cursor.execute(
+                        "UPDATE jobs SET data = ? WHERE job_id = ?",
+                        (json.dumps(data), job_id)
+                    )
+            conn.commit()
+    except Exception as e:
+        logger.error("Failed to mark zombie jobs: %s", e)
+
+def cleanup_old_jobs(hours: int = 24):
+    """Delete jobs older than `hours`."""
+    from app.config import UPLOAD_DIR, OUTPUT_DIR
+    
+    try:
+        with sqlite3.connect(str(JOBS_DB)) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT job_id, data FROM jobs WHERE created_at < datetime('now', ?)",
+                (f"-{hours} hours",)
+            )
+            rows = cursor.fetchall()
+            for job_id, data_str in rows:
+                data = json.loads(data_str)
+                
+                # Try to delete input file
+                input_path = Path(UPLOAD_DIR) / f"{job_id}.pdf"
+                if input_path.exists():
+                    input_path.unlink(missing_ok=True)
+                
+                # Try to delete output file
+                output_path = data.get("output_path")
+                if output_path and Path(output_path).exists():
+                    Path(output_path).unlink(missing_ok=True)
+                
+                # Delete from DB
+                cursor.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+            conn.commit()
+            if rows:
+                logger.info("Cleaned up %d old jobs (older than %d hours).", len(rows), hours)
+    except Exception as e:
+        logger.error("Failed to cleanup old jobs: %s", e)

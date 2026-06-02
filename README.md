@@ -8,7 +8,9 @@
 - 🖼️ Preserves images, font size, and layout using exact bounding boxes
 - 💻 Code-aware: source code blocks are never translated
 - ⚡ **Real-time Progress**: Persistent status polling (`/status/{job_id}`) across extraction, translation, and overlay phases
-- 🧾 **Persistent Job Store**: Translation state is stored in `data/jobs.json` (survives process restarts)
+- 🧾 **Persistent Job Store**: Translation state is stored in `data/jobs.db` (SQLite) ensuring stability across process restarts
+- 🧹 **Auto-Cleanup**: Background tasks automatically remove 24h old translations to prevent disk exhaustion
+- 🔍 **OCR Fallback**: Automatically extracts text from scanned PDFs via `ocrmypdf`
 - 💾 **Deduplication Cache**: Persistent SQLite storage to avoid re-translating identical blocks (saves $$$ and time)
 - 📖 **Dynamic Glossary**: Force specific translations via `data/glossary.json`
 - 📏 **Semantic Autofit**: AI-powered text shortening if the translation doesn't fit the original layout
@@ -20,9 +22,10 @@
 | Layer | Technology |
 |-------|-----------|
 | Backend | Python · FastAPI · Uvicorn |
-| Progress tracking | HTTP polling (`GET /status/{job_id}`) + JSON job store |
-| Cache | SQLite3 (Persistent deduplication) |
-| PDF Read & Overlay | PyMuPDF (fitz) - v2 Architecture |
+| Progress tracking | HTTP polling (`GET /status/{job_id}`) + SQLite job store |
+| Storage & Cache | SQLite3 (Jobs & Persistent deduplication) |
+| PDF Extraction | PyMuPDF (fitz) + ocrmypdf (OCR fallback) |
+| PDF Extraction | PyMuPDF (fitz) + ocrmypdf (OCR fallback) - v2 Architecture |
 | Primary Translation | LLMs (OpenAI / Gemini / Anthropic / Groq) |
 | UI | Vanilla HTML · CSS · JS · Canvas-Confetti |
 
@@ -43,6 +46,8 @@ source venv/bin/activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
+
+# Note: For OCR functionality, ensure system package 'tesseract-ocr' is installed.
 
 # 4. Configure (optional)
 cp .env.example .env
@@ -142,7 +147,9 @@ Any language code supported by Google Translate/LLM works (e.g. `fr`, `de`, `pt`
 ## How It Works (v2 Architecture)
 
 1. **Upload**: User drops a PDF. FastAPI stores a queued job record and spawns a background task.
-2. **Phase 1: Extraction**: PyMuPDF extracts text, fonts, and bounding boxes.
+2. **Phase 1: Extraction & OCR**: 
+    - If the PDF is scanned (image-only), it transparently runs `ocrmypdf` to create a hidden text layer.
+    - PyMuPDF extracts text, fonts, and bounding boxes.
 3. **Phase 2: Intelligent Translation**: 
     - **Cache Lookup**: Skips blocks already translated in previous jobs.
     - **Glossary Injection**: Ensures business terms are translated as defined.

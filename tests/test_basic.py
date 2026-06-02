@@ -23,8 +23,8 @@ def test_config():
 def test_job_store_roundtrip(tmp_path, monkeypatch):
     from app import job_store
 
-    monkeypatch.setattr(job_store, "JOBS_DB", tmp_path / "jobs.json")
-    monkeypatch.setattr(job_store, "LOCK_FILE", tmp_path / "jobs.lock")
+    monkeypatch.setattr(job_store, "JOBS_DB", tmp_path / "jobs.db")
+    job_store.init_job_store()
 
     job_store.ensure_job("job-1", status="processing", phase="queued", current=0, total=0)
     job_store.update_job("job-1", phase="extract", current=2, total=5)
