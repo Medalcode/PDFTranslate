@@ -88,7 +88,7 @@ def is_code(text: str) -> bool:
     return False
 
 
-def is_title(text: str) -> bool:
+def is_title(text: str, font_size: float = 0.0, page_max_font_size: float = 0.0) -> bool:
     """Return True if the block looks like a heading or chapter title."""
     stripped = text.strip()
     if not stripped:
@@ -97,6 +97,12 @@ def is_title(text: str) -> bool:
     # TOC lines and pagination are not real titles — treat as skip/body
     if _TOC_LINE.search(stripped) or _PAGINATION.match(stripped):
         return False
+
+    # Layout heuristic: if font size is noticeably large, it's a title
+    if font_size > 0 and page_max_font_size > 0:
+        # e.g., font size is within 80% of the largest font on the page
+        if font_size >= page_max_font_size * 0.8 and len(stripped.split()) < 20:
+            return True
 
     words = stripped.split()
     # Short — does not end with sentence-closing punctuation
@@ -115,12 +121,12 @@ def is_skip(text: str) -> bool:
     return bool(_TOC_LINE.search(stripped) or _PAGINATION.match(stripped))
 
 
-def classify(text: str) -> str:
+def classify(text: str, font_size: float = 0.0, page_max_font_size: float = 0.0) -> str:
     """Classify a PDF text block as 'code', 'title', 'skip', or 'body'."""
     if is_skip(text):
         return "skip"
     if is_code(text):
         return "code"
-    if is_title(text):
+    if is_title(text, font_size, page_max_font_size):
         return "title"
     return "body"

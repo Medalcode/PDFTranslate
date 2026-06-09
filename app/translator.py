@@ -492,6 +492,25 @@ def translate_pdf(
         logger.info("Extracting page %d / %d", page_idx + 1, total_pages)
         raw = page.get_text("dict")
 
+        # ── Find Tables ──
+        tables = page.find_tables()
+        cell_rects = []
+        if tables and tables.tables:
+            for table in tables.tables:
+                for row in table.cells:
+                    for crect in row:
+                        if crect:
+                            cell_rects.append(fitz.Rect(crect))
+
+        # ── Find Max Font Size on Page ──
+        page_max_font = 0.0
+        for block in raw["blocks"]:
+            if block["type"] == 0:
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        if span["size"] > page_max_font:
+                            page_max_font = span["size"]
+
         for block in raw["blocks"]:
             if block["type"] == 1:  # image block — keep as-is
                 continue
@@ -546,8 +565,20 @@ def translate_pdf(
                 logger.debug("Skipping header/footer on page %d: %r", page_idx, text[:60])
                 continue
 
+            # Check if block belongs to a table cell
+            is_table_cell = False
+            for crect in cell_rects:
+                ix = rect.intersect(crect)
+                if ix.get_area() > rect.get_area() * 0.5:
+                    is_table_cell = True
+                    # Snap horizontal boundaries to the cell to give more autofit breathing room
+                    rect = fitz.Rect(crect.x0, rect.y0, crect.x1, rect.y1)
+                    break
+
             # Classify block type
-            btype = "code" if is_mono else classify(text)
+            btype = "code" if is_mono else classify(text, max_size, page_max_font)
+            if is_table_cell and btype != "code":
+                btype = "table_cell"
 
             all_blocks.append(
                 {
@@ -567,7 +598,7 @@ def translate_pdf(
             progress_callback("extract", page_idx + 1, total_pages)
 
     # ── Pass 2: Translate all translatable blocks ─────────────────────────────
-    translatable_idx = [i for i, b in enumerate(all_blocks) if b["type"] in ("body", "title")]
+    translatable_idx = [i for i, b in enumerate(all_blocks) if b["type"] in ("body", "title", "table_cell")]
     texts_to_translate = [all_blocks[i]["text"] for i in translatable_idx]
 
     logger.info(
@@ -625,7 +656,7 @@ def translate_pdf(
                 bold=b["bold"],
                 italic=b["italic"],
                 color=b["color"],
-                llm=llm if b["type"] in ("body", "title") else None,
+                llm=llm if b["type"] in ("body", "title", "table_cell") else None,
             )
 
         if progress_callback:

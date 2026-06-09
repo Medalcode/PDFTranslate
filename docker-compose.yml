@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  pdftranslate:
+    build: .
+    container_name: pdftranslate
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
