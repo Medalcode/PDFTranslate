@@ -11,9 +11,11 @@
 - 🧾 **Persistent Job Store**: Translation state is stored in `data/jobs.db` (SQLite) ensuring stability across process restarts
 - 🧹 **Auto-Cleanup**: Background tasks automatically remove 24h old translations to prevent disk exhaustion
 - 🔍 **OCR Fallback**: Automatically extracts text from scanned PDFs via `ocrmypdf`
+- 📊 **Table & Structure Preservation**: Uses advanced layout detection (`find_tables()`) to keep columns strictly aligned
 - 💾 **Deduplication Cache**: Persistent SQLite storage to avoid re-translating identical blocks (saves $$$ and time)
 - 📖 **Dynamic Glossary**: Force specific translations via `data/glossary.json`
 - 📏 **Semantic Autofit**: AI-powered text shortening if the translation doesn't fit the original layout
+- 🐳 **Docker Ready**: Fully containerized setup for zero-config deployment as a SaaS
 - 🧭 **Stable Paths**: Runtime files resolve from project root (independent of process working directory)
 - 🌐 Modern dark-mode web UI with drag-and-drop & confetti success effects
 
@@ -28,6 +30,7 @@
 | PDF Extraction | PyMuPDF (fitz) + ocrmypdf (OCR fallback) - v2 Architecture |
 | Primary Translation | LLMs (OpenAI / Gemini / Anthropic / Groq) |
 | UI | Vanilla HTML · CSS · JS · Canvas-Confetti |
+| Deployment | Docker & Docker Compose (Ready for SaaS) |
 
 ## Quick Start
 
@@ -55,6 +58,20 @@ cp .env.example .env
 
 # 5. Run the app (development)
 uvicorn app.main:app --reload
+```
+
+### Docker Quick Start (Production/SaaS)
+
+```bash
+# Clone the repository
+git clone https://github.com/Medalcode/PDFTranslate.git
+cd PDFTranslate
+
+# Create your .env file
+cp .env.example .env
+
+# Build and run using Docker Compose in detached mode
+docker compose up -d
 ```
 
 Then open [http://localhost:8000](http://localhost:8000) in your browser.
@@ -147,9 +164,10 @@ Any language code supported by Google Translate/LLM works (e.g. `fr`, `de`, `pt`
 ## How It Works (v2 Architecture)
 
 1. **Upload**: User drops a PDF. FastAPI stores a queued job record and spawns a background task.
-2. **Phase 1: Extraction & OCR**: 
+2. **Phase 1: Extraction, OCR & Layout**: 
     - If the PDF is scanned (image-only), it transparently runs `ocrmypdf` to create a hidden text layer.
-    - PyMuPDF extracts text, fonts, and bounding boxes.
+    - PyMuPDF extracts tables via advanced heuristics (`find_tables`) to isolate columns and rows into protected cells.
+    - PyMuPDF extracts all remaining text, fonts, and bounding boxes.
 3. **Phase 2: Intelligent Translation**: 
     - **Cache Lookup**: Skips blocks already translated in previous jobs.
     - **Glossary Injection**: Ensures business terms are translated as defined.
