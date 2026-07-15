@@ -1,8 +1,8 @@
-import sqlite3
 import json
 import logging
-from typing import Any
+import sqlite3
 from pathlib import Path
+from typing import Any
 
 from app.paths import project_path
 
@@ -32,11 +32,8 @@ def ensure_job(job_id: str, **fields: Any) -> dict[str, Any]:
         with sqlite3.connect(str(JOBS_DB)) as conn:
             # Check if job exists
             res = conn.execute("SELECT data FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-            if res:
-                job_data = json.loads(res[0])
-            else:
-                job_data = {}
-            
+            job_data = json.loads(res[0]) if res else {}
+
             job_data.update(fields)
             conn.execute(
                 "INSERT OR REPLACE INTO jobs (job_id, data) VALUES (?, ?)",
@@ -54,10 +51,10 @@ def update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
             res = conn.execute("SELECT data FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
             if not res:
                 return None
-            
+
             job_data = json.loads(res[0])
             job_data.update(fields)
-            
+
             conn.execute(
                 "UPDATE jobs SET data = ? WHERE job_id = ?",
                 (json.dumps(job_data), job_id)
@@ -102,8 +99,8 @@ def mark_zombie_jobs():
 
 def cleanup_old_jobs(hours: int = 24):
     """Delete jobs older than `hours`."""
-    from app.config import UPLOAD_DIR, OUTPUT_DIR
-    
+    from app.config import UPLOAD_DIR
+
     try:
         with sqlite3.connect(str(JOBS_DB)) as conn:
             cursor = conn.cursor()
@@ -114,17 +111,17 @@ def cleanup_old_jobs(hours: int = 24):
             rows = cursor.fetchall()
             for job_id, data_str in rows:
                 data = json.loads(data_str)
-                
+
                 # Try to delete input file
                 input_path = Path(UPLOAD_DIR) / f"{job_id}.pdf"
                 if input_path.exists():
                     input_path.unlink(missing_ok=True)
-                
+
                 # Try to delete output file
                 output_path = data.get("output_path")
                 if output_path and Path(output_path).exists():
                     Path(output_path).unlink(missing_ok=True)
-                
+
                 # Delete from DB
                 cursor.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
             conn.commit()

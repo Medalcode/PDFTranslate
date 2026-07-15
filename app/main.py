@@ -3,20 +3,20 @@ FastAPI application for PDFTranslate.
 Routes: POST /translate, GET /status/{job_id}, GET /download/{job_id}, GET /
 """
 
+import asyncio
 import logging
 import shutil
 import uuid
-from enum import Enum
+from contextlib import asynccontextmanager
+from enum import StrEnum
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-import asyncio
-from contextlib import asynccontextmanager
 
 from app.config import OUTPUT_DIR, SOURCE_LANG, TARGET_LANG, UPLOAD_DIR
-from app.job_store import ensure_job, get_job, update_job, mark_zombie_jobs, cleanup_old_jobs
+from app.job_store import cleanup_old_jobs, ensure_job, get_job, mark_zombie_jobs, update_job
 from app.paths import project_path
 from app.translator import translate_pdf
 
@@ -29,7 +29,7 @@ async def run_periodic_cleanup():
         cleanup_old_jobs(24)
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     logger.info("Starting up PDFTranslate server... running initial maintenance.")
     mark_zombie_jobs()
     cleanup_old_jobs(24)
@@ -49,7 +49,7 @@ app.mount("/static", StaticFiles(directory=str(project_path("static"))), name="s
 
 
 # ── Job state store ──────────────────────────────────────────────────────────
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     PROCESSING = "processing"
     DONE = "done"
     ERROR = "error"

@@ -3,6 +3,7 @@ import os
 
 from dotenv import load_dotenv
 
+from app.cache import init_cache
 from app.paths import resolve_user_path
 
 load_dotenv()
@@ -122,7 +123,5 @@ if GLOSSARY_PATH.exists():
 # Ensure runtime directories exist
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-from app.cache import init_cache
 
 init_cache()

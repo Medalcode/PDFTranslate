@@ -99,10 +99,8 @@ def is_title(text: str, font_size: float = 0.0, page_max_font_size: float = 0.0)
         return False
 
     # Layout heuristic: if font size is noticeably large, it's a title
-    if font_size > 0 and page_max_font_size > 0:
-        # e.g., font size is within 80% of the largest font on the page
-        if font_size >= page_max_font_size * 0.8 and len(stripped.split()) < 20:
-            return True
+    if font_size > 0 and page_max_font_size > 0 and font_size >= page_max_font_size * 0.8 and len(stripped.split()) < 20:
+        return True
 
     words = stripped.split()
     # Short — does not end with sentence-closing punctuation

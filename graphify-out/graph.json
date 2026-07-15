@@ -1,0 +1,709 @@
+{
+  "nodes": [
+    {
+      "id": 1,
+      "name": "PDFTranslate",
+      "type": "module",
+      "file": null,
+      "doc": null
+    },
+    {
+      "id": 2,
+      "name": "app/__init__",
+      "type": "module",
+      "file": "app/__init__.py",
+      "doc": null
+    },
+    {
+      "id": 3,
+      "name": "app/cache",
+      "type": "module",
+      "file": "app/cache.py",
+      "doc": null
+    },
+    {
+      "id": 4,
+      "name": "app/cache.init_cache",
+      "type": "function",
+      "file": "app/cache.py",
+      "doc": "Ensure the cache database exists with the correct schema."
+    },
+    {
+      "id": 5,
+      "name": "app/cache.get_cached_translation",
+      "type": "function",
+      "file": "app/cache.py",
+      "doc": "Retrieve a translation from the cache if it exists."
+    },
+    {
+      "id": 6,
+      "name": "app/cache.save_to_cache",
+      "type": "function",
+      "file": "app/cache.py",
+      "doc": "Save a successful translation to the cache."
+    },
+    {
+      "id": 7,
+      "name": "app/classifiers",
+      "type": "module",
+      "file": "app/classifiers.py",
+      "doc": null
+    },
+    {
+      "id": 8,
+      "name": "app/classifiers.is_code",
+      "type": "function",
+      "file": "app/classifiers.py",
+      "doc": "Return True only if the block is clearly source code or a shell command."
+    },
+    {
+      "id": 9,
+      "name": "app/classifiers.is_title",
+      "type": "function",
+      "file": "app/classifiers.py",
+      "doc": "Return True if the block looks like a heading or chapter title."
+    },
+    {
+      "id": 10,
+      "name": "app/classifiers.is_skip",
+      "type": "function",
+      "file": "app/classifiers.py",
+      "doc": "Return True if the block is just pagination or TOC leaders that shouldn't be translated."
+    },
+    {
+      "id": 11,
+      "name": "app/classifiers.classify",
+      "type": "function",
+      "file": "app/classifiers.py",
+      "doc": "Classify a PDF text block as 'code', 'title', 'skip', or 'body'."
+    },
+    {
+      "id": 12,
+      "name": "app/config",
+      "type": "module",
+      "file": "app/config.py",
+      "doc": null
+    },
+    {
+      "id": 13,
+      "name": "app/job_store",
+      "type": "module",
+      "file": "app/job_store.py",
+      "doc": null
+    },
+    {
+      "id": 14,
+      "name": "app/job_store.init_job_store",
+      "type": "function",
+      "file": "app/job_store.py",
+      "doc": ""
+    },
+    {
+      "id": 15,
+      "name": "app/job_store.ensure_job",
+      "type": "function",
+      "file": "app/job_store.py",
+      "doc": ""
+    },
+    {
+      "id": 16,
+      "name": "app/job_store.update_job",
+      "type": "function",
+      "file": "app/job_store.py",
+      "doc": ""
+    },
+    {
+      "id": 17,
+      "name": "app/job_store.get_job",
+      "type": "function",
+      "file": "app/job_store.py",
+      "doc": ""
+    },
+    {
+      "id": 18,
+      "name": "app/job_store.mark_zombie_jobs",
+      "type": "function",
+      "file": "app/job_store.py",
+      "doc": "Mark jobs that were left in 'processing' state from a previous run as 'error'."
+    },
+    {
+      "id": 19,
+      "name": "app/job_store.cleanup_old_jobs",
+      "type": "function",
+      "file": "app/job_store.py",
+      "doc": "Delete jobs older than `hours`."
+    },
+    {
+      "id": 20,
+      "name": "app/main",
+      "type": "module",
+      "file": "app/main.py",
+      "doc": null
+    },
+    {
+      "id": 21,
+      "name": "app/main.JobStatus",
+      "type": "class",
+      "file": "app/main.py",
+      "doc": ""
+    },
+    {
+      "id": 22,
+      "name": "app/main._run_translation",
+      "type": "function",
+      "file": "app/main.py",
+      "doc": ""
+    },
+    {
+      "id": 23,
+      "name": "app/main.progress_cb",
+      "type": "function",
+      "file": "app/main.py",
+      "doc": ""
+    },
+    {
+      "id": 24,
+      "name": "app/paths",
+      "type": "module",
+      "file": "app/paths.py",
+      "doc": null
+    },
+    {
+      "id": 25,
+      "name": "app/paths.project_path",
+      "type": "function",
+      "file": "app/paths.py",
+      "doc": ""
+    },
+    {
+      "id": 26,
+      "name": "app/paths.resolve_user_path",
+      "type": "function",
+      "file": "app/paths.py",
+      "doc": ""
+    },
+    {
+      "id": 27,
+      "name": "app/translator",
+      "type": "module",
+      "file": "app/translator.py",
+      "doc": null
+    },
+    {
+      "id": 28,
+      "name": "app/translator._protect",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 29,
+      "name": "app/translator._restore",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 30,
+      "name": "app/translator._clean_text",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 31,
+      "name": "app/translator._LLMBase",
+      "type": "class",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 32,
+      "name": "app/translator._LLMBase.call",
+      "type": "method",
+      "file": "app/translator.py",
+      "doc": null
+    },
+    {
+      "id": 33,
+      "name": "app/translator._GeminiBackend",
+      "type": "class",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 34,
+      "name": "app/translator._GeminiBackend.__init__",
+      "type": "method",
+      "file": "app/translator.py",
+      "doc": null
+    },
+    {
+      "id": 35,
+      "name": "app/translator._GeminiBackend.call",
+      "type": "method",
+      "file": "app/translator.py",
+      "doc": null
+    },
+    {
+      "id": 36,
+      "name": "app/translator._OpenAIBackend",
+      "type": "class",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 37,
+      "name": "app/translator._OpenAIBackend.__init__",
+      "type": "method",
+      "file": "app/translator.py",
+      "doc": null
+    },
+    {
+      "id": 38,
+      "name": "app/translator._OpenAIBackend.call",
+      "type": "method",
+      "file": "app/translator.py",
+      "doc": null
+    },
+    {
+      "id": 39,
+      "name": "app/translator._build_llm",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 40,
+      "name": "app/translator._parse_numbered_blocks",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": "Parse [N] block format from LLM response."
+    },
+    {
+      "id": 41,
+      "name": "app/translator.LLMQuotaExceeded",
+      "type": "class",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 42,
+      "name": "app/translator._translate_with_llm",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": "Translate blocks using LLM with internal caching and glossary support."
+    },
+    {
+      "id": 43,
+      "name": "app/translator._translate_with_google",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 44,
+      "name": "app/translator._pdf_fontname",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": "Map a PDF font name to a PyMuPDF base-14 font identifier."
+    },
+    {
+      "id": 45,
+      "name": "app/translator._insert_autofit",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": "Insert text into rect, shrinking or rewriting via LLM if it doesn't fit."
+    },
+    {
+      "id": 46,
+      "name": "app/translator.translate_pdf",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": "Translate a PDF document using the v2 overlay pipeline.\n\nKey difference from v1:\n  - Images, borders, and decorations remain untouched (they're not text).\n  - Text is redacted in-place and replaced wi"
+    },
+    {
+      "id": 47,
+      "name": "app/translator.call",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 48,
+      "name": "app/translator.__init__",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 49,
+      "name": "app/translator._call",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 50,
+      "name": "app/translator.flush",
+      "type": "function",
+      "file": "app/translator.py",
+      "doc": ""
+    },
+    {
+      "id": 51,
+      "name": "tests/__init__",
+      "type": "module",
+      "file": "tests/__init__.py",
+      "doc": null
+    },
+    {
+      "id": 52,
+      "name": "tests/test_basic",
+      "type": "module",
+      "file": "tests/test_basic.py",
+      "doc": null
+    },
+    {
+      "id": 53,
+      "name": "tests/test_basic.test_read_main",
+      "type": "function",
+      "file": "tests/test_basic.py",
+      "doc": ""
+    },
+    {
+      "id": 54,
+      "name": "tests/test_basic.test_config",
+      "type": "function",
+      "file": "tests/test_basic.py",
+      "doc": ""
+    },
+    {
+      "id": 55,
+      "name": "tests/test_basic.test_job_store_roundtrip",
+      "type": "function",
+      "file": "tests/test_basic.py",
+      "doc": ""
+    },
+    {
+      "id": 56,
+      "name": "tests/test_basic.test_llm_prompt_uses_configured_languages",
+      "type": "function",
+      "file": "tests/test_basic.py",
+      "doc": ""
+    },
+    {
+      "id": 57,
+      "name": "tests/test_basic.DummyLLM",
+      "type": "class",
+      "file": "tests/test_basic.py",
+      "doc": ""
+    },
+    {
+      "id": 58,
+      "name": "tests/test_basic.DummyLLM.call",
+      "type": "method",
+      "file": "tests/test_basic.py",
+      "doc": null
+    },
+    {
+      "id": 59,
+      "name": "tests/test_basic.call",
+      "type": "function",
+      "file": "tests/test_basic.py",
+      "doc": ""
+    }
+  ],
+  "edges": [
+    {
+      "source": 1,
+      "target": 2,
+      "label": "contains"
+    },
+    {
+      "source": 1,
+      "target": 3,
+      "label": "contains"
+    },
+    {
+      "source": 3,
+      "target": 4,
+      "label": "defines"
+    },
+    {
+      "source": 3,
+      "target": 5,
+      "label": "defines"
+    },
+    {
+      "source": 3,
+      "target": 6,
+      "label": "defines"
+    },
+    {
+      "source": 1,
+      "target": 7,
+      "label": "contains"
+    },
+    {
+      "source": 7,
+      "target": 8,
+      "label": "defines"
+    },
+    {
+      "source": 7,
+      "target": 9,
+      "label": "defines"
+    },
+    {
+      "source": 7,
+      "target": 10,
+      "label": "defines"
+    },
+    {
+      "source": 7,
+      "target": 11,
+      "label": "defines"
+    },
+    {
+      "source": 1,
+      "target": 12,
+      "label": "contains"
+    },
+    {
+      "source": 1,
+      "target": 13,
+      "label": "contains"
+    },
+    {
+      "source": 13,
+      "target": 14,
+      "label": "defines"
+    },
+    {
+      "source": 13,
+      "target": 15,
+      "label": "defines"
+    },
+    {
+      "source": 13,
+      "target": 16,
+      "label": "defines"
+    },
+    {
+      "source": 13,
+      "target": 17,
+      "label": "defines"
+    },
+    {
+      "source": 13,
+      "target": 18,
+      "label": "defines"
+    },
+    {
+      "source": 13,
+      "target": 19,
+      "label": "defines"
+    },
+    {
+      "source": 1,
+      "target": 20,
+      "label": "contains"
+    },
+    {
+      "source": 20,
+      "target": 21,
+      "label": "defines"
+    },
+    {
+      "source": 20,
+      "target": 22,
+      "label": "defines"
+    },
+    {
+      "source": 20,
+      "target": 23,
+      "label": "defines"
+    },
+    {
+      "source": 1,
+      "target": 24,
+      "label": "contains"
+    },
+    {
+      "source": 24,
+      "target": 25,
+      "label": "defines"
+    },
+    {
+      "source": 24,
+      "target": 26,
+      "label": "defines"
+    },
+    {
+      "source": 1,
+      "target": 27,
+      "label": "contains"
+    },
+    {
+      "source": 27,
+      "target": 28,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 29,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 30,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 31,
+      "label": "defines"
+    },
+    {
+      "source": 31,
+      "target": 32,
+      "label": "has_method"
+    },
+    {
+      "source": 27,
+      "target": 33,
+      "label": "defines"
+    },
+    {
+      "source": 33,
+      "target": 34,
+      "label": "has_method"
+    },
+    {
+      "source": 33,
+      "target": 35,
+      "label": "has_method"
+    },
+    {
+      "source": 27,
+      "target": 36,
+      "label": "defines"
+    },
+    {
+      "source": 36,
+      "target": 37,
+      "label": "has_method"
+    },
+    {
+      "source": 36,
+      "target": 38,
+      "label": "has_method"
+    },
+    {
+      "source": 27,
+      "target": 39,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 40,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 41,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 42,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 43,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 44,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 45,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 46,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 47,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 48,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 49,
+      "label": "defines"
+    },
+    {
+      "source": 27,
+      "target": 50,
+      "label": "defines"
+    },
+    {
+      "source": 1,
+      "target": 51,
+      "label": "contains"
+    },
+    {
+      "source": 1,
+      "target": 52,
+      "label": "contains"
+    },
+    {
+      "source": 52,
+      "target": 53,
+      "label": "defines"
+    },
+    {
+      "source": 52,
+      "target": 54,
+      "label": "defines"
+    },
+    {
+      "source": 52,
+      "target": 55,
+      "label": "defines"
+    },
+    {
+      "source": 52,
+      "target": 56,
+      "label": "defines"
+    },
+    {
+      "source": 52,
+      "target": 57,
+      "label": "defines"
+    },
+    {
+      "source": 57,
+      "target": 58,
+      "label": "has_method"
+    },
+    {
+      "source": 52,
+      "target": 59,
+      "label": "defines"
+    }
+  ]
+}

@@ -46,8 +46,8 @@ def test_llm_prompt_uses_configured_languages(monkeypatch):
             captured["prompt"] = prompt
             return "[1] Bonjour"
 
-    monkeypatch.setattr(translator, "get_cached_translation", lambda text, target_lang: None)
-    monkeypatch.setattr(translator, "save_to_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr(translator, "get_cached_translation", lambda _text, _target_lang: None)
+    monkeypatch.setattr(translator, "save_to_cache", lambda *_args, **_kwargs: None)
 
     result = translator._translate_with_llm(["Hello"], DummyLLM(), "en", "fr")
     assert result == ["Bonjour"]

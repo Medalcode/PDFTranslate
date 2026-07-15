@@ -187,7 +187,7 @@ def _parse_numbered_blocks(response: str, expected: int) -> list[str] | None:
     return result
 
 
-class LLMQuotaExceeded(Exception):
+class LLMQuotaExceededError(Exception):
     pass
 
 
@@ -250,7 +250,7 @@ def _translate_with_llm(
 
                 parsed = _parse_numbered_blocks(response, len(batch))
                 if parsed:
-                    for j, (translated, ph_map) in enumerate(zip(parsed, ph_maps)):
+                    for j, (translated, ph_map) in enumerate(zip(parsed, ph_maps, strict=True)):
                         t = _restore(translated, ph_map) if translated else batch[j]
                         results[batch_idxs[j]] = t
                         # Save to cache
@@ -268,7 +268,7 @@ def _translate_with_llm(
             logger.error("LLM batch %d failed after all retries.", start)
             consecutive_failures += 1
             if consecutive_failures >= 3:
-                raise LLMQuotaExceeded("Consecutive LLM failures exceeded limit")
+                raise LLMQuotaExceededError("Consecutive LLM failures exceeded limit")
             # Fill with originals if failed
             for j in range(len(batch)):
                 results[batch_idxs[j]] = batch[j]
@@ -308,12 +308,12 @@ def _translate_with_google(texts: list[str], source: str, target: str) -> list[s
         translated_joined = _restore(translated_joined, ph_map)
         parts = translated_joined.split(_GT_BATCH_SEP.strip())
         if len(parts) == len(batch):
-            for idx, t in zip(idxs, parts):
+            for idx, t in zip(idxs, parts, strict=True):
                 final[idx] = t.strip()
             return
         # Fallback: per-item
         logger.warning("GT batch split mismatch — translating individually.")
-        for idx, t in zip(idxs, batch):
+        for idx, t in zip(idxs, batch, strict=True):
             p_t, ph = _protect(t)
             final[idx] = _restore(_call(p_t), ph)
 
@@ -412,7 +412,7 @@ def _insert_autofit(
             dummy_doc.close()
             return
         fs -= 0.5
-        
+
     dummy_doc.close()
 
     # If it still doesn't fit at 6pt and we have an LLM, try semantic shortening
@@ -614,7 +614,7 @@ def translate_pdf(
                 translated = _translate_with_llm(texts_to_translate, llm, source_lang, target_lang)
                 if progress_callback:
                     progress_callback("translate", 100, 100)
-            except LLMQuotaExceeded as exc:
+            except LLMQuotaExceededError as exc:
                 logger.error("LLM aborted (%s). Switching to Google Translate fallback...", exc)
                 translated = _translate_with_google(texts_to_translate, source_lang, target_lang)
             except Exception as exc:
@@ -625,7 +625,7 @@ def translate_pdf(
         else:
             translated = _translate_with_google(texts_to_translate, source_lang, target_lang)
 
-        for i, t in zip(translatable_idx, translated):
+        for i, t in zip(translatable_idx, translated, strict=True):
             all_blocks[i]["translated"] = t
 
     # Non-translatable blocks keep their original text (code, etc.)

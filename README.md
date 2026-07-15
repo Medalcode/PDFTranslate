@@ -179,6 +179,14 @@ Any language code supported by Google Translate/LLM works (e.g. `fr`, `de`, `pt`
 5. **Status & Delivery**: The frontend polls `/status/{job_id}` once per second and enables download when status becomes `done`.
 6. **Success**: The final PDF is saved in `data/outputs/` and the UI triggers a confetti celebration.
 
+## Knowledge Graph
+
+`graphify-out/graph.json` contiene **59 nodos y 58 aristas** del AST del proyecto, permitiendo a agentes AI comprender la arquitectura sin escanear archivos.
+
+## Skills
+
+- **tdd** (skills.sh) — patrones de testing para mantener y expandir la cobertura
+
 ## License
 
 [MIT](LICENSE)
